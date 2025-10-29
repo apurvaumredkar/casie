@@ -136,4 +136,3 @@ To add a new Discord slash command:
 - Never respond synchronously to long-running operations (>3 seconds)
 - Always use deferred responses for API calls
 - Discord webhook tokens are single-use and expire after 15 minutes
-- The worker is deployed at: `https://monica.apoorv-umredkar.workers.dev`

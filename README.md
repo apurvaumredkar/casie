@@ -1,31 +1,26 @@
 # Monica Discord Bot
 
-Monica is an AI-powered Discord bot built on Cloudflare Workers that provides intelligent assistance through slash commands. It integrates with OpenRouter's LLM API for natural language processing and Brave Search API for web search capabilities.
+An AI-powered Discord bot built on Cloudflare Workers that demonstrates how to integrate LLM capabilities and web search into Discord slash commands. This project serves as a learning resource for building serverless Discord bots with TypeScript.
 
 ## Features
 
-- **`/ask`** - Chat with an AI assistant powered by Meta's Llama 4 Scout
-- **`/search`** - Search the web and get AI-summarized results
-- **Edge deployment** - Runs on Cloudflare's global network for low latency
-- **Secure** - Ed25519 signature verification for all Discord interactions
-- **Async processing** - Deferred responses to handle Discord's 3-second timeout
+- **`/ask`** - Direct LLM chat using OpenRouter API
+- **`/search`** - Web search with AI-powered summarization via Brave Search API
+- **Deferred responses** - Handles Discord's 3-second timeout with async processing
+- **Signature verification** - Secure Discord webhook validation using Ed25519
+- **Edge deployment** - Runs globally on Cloudflare's network
 
-## Architecture
+## Architecture Overview
 
-Monica is built as a Cloudflare Worker that handles Discord webhook interactions:
+This bot uses a deferred response pattern to handle long-running API calls:
 
-1. Discord sends interaction → Worker verifies signature
-2. Worker responds immediately with deferred message
-3. Background processing calls external APIs
-4. Follow-up message sent to Discord with results
+1. Discord sends webhook interaction
+2. Worker verifies Ed25519 signature
+3. Worker responds immediately with deferred acknowledgment
+4. Background processing calls external APIs
+5. Follow-up message sent via Discord webhook
 
-### Tech Stack
-
-- **Runtime**: Cloudflare Workers
-- **Language**: TypeScript
-- **LLM Provider**: OpenRouter (Meta Llama 4 Scout)
-- **Search API**: Brave Search
-- **Platform**: Discord Bot
+**Tech Stack:** TypeScript, Cloudflare Workers, OpenRouter API, Brave Search API
 
 ## Setup
 
@@ -37,10 +32,10 @@ Monica is built as a Cloudflare Worker that handles Discord webhook interactions
 - OpenRouter API key
 - Brave Search API key
 
-### 1. Clone the Repository
+### 1. Clone and Install
 
 ```bash
-git clone https://github.com/apurvaumredkar/monica.git
+git clone <your-repo-url>
 cd monica
 npm install
 ```
@@ -90,15 +85,14 @@ npx wrangler secret put BRAVE_API_KEY
 npm run deploy
 ```
 
-Your worker will be deployed and you'll get a URL like:
-`https://monica.your-subdomain.workers.dev`
+You'll receive a worker URL (e.g., `https://your-worker.workers.dev`)
 
 ### 6. Configure Discord Webhook
 
-1. Go back to Discord Developer Portal → Your Application
+1. Return to Discord Developer Portal → Your Application
 2. Navigate to General Information
 3. Set "Interactions Endpoint URL" to your worker URL
-4. Discord will verify the endpoint (must return valid signature verification)
+4. Discord will verify the endpoint automatically
 
 ## Development
 
@@ -129,22 +123,18 @@ npx tsc --noEmit
 npx wrangler tail
 ```
 
-## Commands
+## Usage
 
 ### `/ask <question>`
 
-Ask Monica any question and get an AI-generated response.
-
-**Example:**
+Direct chat with the LLM. Example:
 ```
 /ask What is quantum computing?
 ```
 
 ### `/search <query>`
 
-Search the web and get an AI-summarized response with sources.
-
-**Example:**
+Web search with AI-powered summary. Example:
 ```
 /search latest developments in artificial intelligence
 ```
@@ -169,75 +159,49 @@ monica/
 
 ## How It Works
 
-### Discord Interaction Flow
+**Discord Interaction Flow:**
 
-1. User runs `/ask` or `/search` in Discord
-2. Discord sends POST request to worker with signed payload
-3. Worker verifies Ed25519 signature using `DISCORD_PUBLIC_KEY`
-4. Worker responds with `DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE` (type 5)
-5. Worker processes request asynchronously:
-   - `/ask`: Sends prompt to OpenRouter LLM
-   - `/search`: Calls Brave Search → Sends results to LLM for summarization
-6. Worker sends follow-up message via Discord webhook
-7. Discord displays the response to the user
+1. User runs `/ask` or `/search` command
+2. Discord sends signed POST request to worker
+3. Worker verifies Ed25519 signature
+4. Worker responds with deferred acknowledgment (type 5)
+5. Background processing via `ctx.waitUntil()`:
+   - `/ask`: Calls OpenRouter LLM
+   - `/search`: Calls Brave Search → LLM summarization
+6. Follow-up message sent via Discord webhook
 
-### Deferred Response Pattern
+**Key Concept - Deferred Response Pattern:**
 
-Discord requires responses within 3 seconds. Since external API calls can take longer:
+Discord requires responses within 3 seconds. External API calls often take longer. The solution:
+- Immediately acknowledge with a deferred response
+- Process asynchronously in the background
+- Send the actual result via webhook when ready
 
-- Worker immediately acknowledges the interaction
-- Processing happens in background via `ctx.waitUntil()`
-- Final response sent via Discord's webhook API
-
-This pattern prevents timeout errors and provides a better user experience.
+This pattern is essential for any Discord bot making external API calls.
 
 ## Configuration
 
-### Model Settings
-
-The LLM configuration can be adjusted in [src/worker.ts](src/worker.ts):
-
+**LLM Settings** ([src/worker.ts](src/worker.ts)):
 ```typescript
 const LLM_MODEL = "meta-llama/llama-4-scout:free";
 const DEFAULT_TEMPERATURE = 0.4;
 ```
 
-### System Prompt
+**System Prompt:** Customize the bot's personality in the `SYSTEM_PROMPT` constant.
 
-Monica's personality and behavior are defined in the `SYSTEM_PROMPT` constant in [src/worker.ts](src/worker.ts).
+## Security Notes
 
-## Security
+- Discord interactions verified with Ed25519 signatures
+- API keys stored as Cloudflare secrets (never in code)
+- No user data stored or logged
 
-- All Discord interactions are verified using Ed25519 signatures
-- API keys are stored as Cloudflare Worker secrets (not in code)
-- `.env` file is gitignored to prevent accidental exposure
-- No user data is stored or logged
+## Learning Resources
 
-## Contributing
-
-Contributions are welcome! Please:
-
-1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes (`git commit -m 'Add amazing feature'`)
-4. Push to the branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request
+- [Cloudflare Workers Docs](https://developers.cloudflare.com/workers/)
+- [Discord Interactions Guide](https://discord.com/developers/docs/interactions/receiving-and-responding)
+- [OpenRouter API](https://openrouter.ai/docs)
+- [Brave Search API](https://brave.com/search/api/)
 
 ## License
 
-This project is open source and available under the MIT License.
-
-## Acknowledgments
-
-- Built with [Cloudflare Workers](https://workers.cloudflare.com/)
-- Powered by [OpenRouter](https://openrouter.ai/)
-- Search by [Brave Search API](https://brave.com/search/api/)
-- Bot platform by [Discord](https://discord.com/)
-
-## Support
-
-For issues, questions, or suggestions, please [open an issue](https://github.com/apurvaumredkar/monica/issues) on GitHub.
-
----
-
-**Deployed at:** `https://monica.apoorv-umredkar.workers.dev`
+MIT License - Feel free to use this project for learning and building your own Discord bots.
