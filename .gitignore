@@ -179,3 +179,6 @@ dist/
 # OS
 .DS_Store
 Thumbs.db
+
+# Claude Code project instructions (local only)
+CLAUDE.md
