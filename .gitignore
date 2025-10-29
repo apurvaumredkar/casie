@@ -165,3 +165,17 @@ dist
 .env*
 !.env.example
 .wrangler/
+
+# Build outputs
+dist/
+.worker-next/
+
+# IDE
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
