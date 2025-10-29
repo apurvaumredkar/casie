@@ -1,0 +1,6 @@
+name = "monica"
+main = "src/worker.ts"
+compatibility_date = "2025-10-28"
+
+[observability]
+enabled = true
