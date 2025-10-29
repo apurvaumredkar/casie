@@ -1,6 +1,7 @@
-name = "monica"
+name = "monica-core"
 main = "src/worker.ts"
 compatibility_date = "2025-10-28"
+account_id = "57a380cabf0851d1d6fcadc7eb01e2c1"
 
 [observability]
 enabled = true

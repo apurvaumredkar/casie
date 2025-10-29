@@ -1,0 +1,52 @@
+# Wrangler configuration for Spotify Bot worker
+# See: https://developers.cloudflare.com/workers/configuration/
+
+name = "monica-spotify"
+main = "src/index.ts"
+compatibility_date = "2025-10-01"
+
+# Account and deployment settings
+# workers_dev = true  # Uncomment for workers.dev subdomain deployment
+account_id = "57a380cabf0851d1d6fcadc7eb01e2c1"    
+# zone_id = ""        # Add your zone ID if using custom domain
+
+# Environment variables (use wrangler secret for sensitive values)
+# These are just placeholders - actual secrets must be set via CLI:
+# wrangler secret put DISCORD_PUBLIC_KEY
+# wrangler secret put DISCORD_BOT_TOKEN
+# wrangler secret put SPOTIFY_CLIENT_ID
+# wrangler secret put SPOTIFY_CLIENT_SECRET
+# wrangler secret put SPOTIFY_REDIRECT_URI
+# wrangler secret put OPENROUTER_API_KEY
+
+# Optional environment variables (defaults provided in code)
+[vars]
+OPENROUTER_MODEL = "meta-llama/llama-4-scout:free"
+
+# Example route configuration (uncomment and adjust for your domain):
+# [[routes]]
+# pattern = "spotify.monica.example.com/*"
+# zone_name = "monica.example.com"
+
+# Build configuration
+[build]
+command = "npm run build"
+
+# TypeScript support (automatically enabled for .ts files)
+[build.upload]
+format = "service-worker"
+
+# KV namespace for persistent token storage
+[[kv_namespaces]]
+binding = "SPOTIFY_TOKENS"
+id = "4e9afc5c83394af987c57a83012e30b8"
+
+# Optional: Durable Objects for more complex state management
+# [[durable_objects.bindings]]
+# name = "SPOTIFY_SESSION"
+# class_name = "SpotifySession"
+# script_name = "monica-spotify"
+
+# Observability
+[observability]
+enabled = true

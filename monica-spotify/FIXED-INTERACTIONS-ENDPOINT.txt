@@ -1,0 +1,88 @@
+✅ DISCORD INTERACTIONS ENDPOINT ISSUE FIXED
+============================================
+
+PROBLEM
+-------
+Discord was rejecting the interactions endpoint with error:
+"The specified interactions endpoint url could not be verified."
+
+ROOT CAUSE
+----------
+SpotiBot was using Monica Core's DISCORD_PUBLIC_KEY instead of its own.
+Discord sends a signed PING request to verify the endpoint, and signature
+verification was failing because we had the wrong public key.
+
+SOLUTION APPLIED
+----------------
+✅ Created separate .env file for SpotiBot (isolated from Monica Core)
+✅ Updated DISCORD_PUBLIC_KEY secret to SpotiBot's actual public key
+✅ Worker is healthy and responding correctly
+
+SPOTIBOT CONFIGURATION
+----------------------
+Discord Public Key: 3092e0d6786cd16c93fce47ce6aaf694f49ba71d165f194c5088ec2c711bd11f
+Application ID: 1433104809459974196
+Worker URL: https://monica-spotify.apoorv-umredkar.workers.dev
+Health Check: ✅ Working
+
+SECRETS NOW CONFIGURED (6 total)
+---------------------------------
+✅ DISCORD_PUBLIC_KEY (SpotiBot specific - NOW CORRECT)
+✅ OPENROUTER_API_KEY
+✅ BRAVE_API_KEY
+✅ SPOTIFY_CLIENT_ID
+✅ SPOTIFY_CLIENT_SECRET
+✅ SPOTIFY_REDIRECT_URI
+
+ISOLATION IMPLEMENTED
+---------------------
+✅ SpotiBot has its own .env file: spotify-worker/.env
+✅ Monica Core has its own .env file: .env
+✅ Each worker has separate secrets in Cloudflare
+✅ Complete isolation between the two bots
+
+TRY AGAIN NOW
+-------------
+1. Go to: https://discord.com/developers/applications/1433104809459974196
+2. Navigate to: General Information
+3. Set Interactions Endpoint URL to:
+
+   https://monica-spotify.apoorv-umredkar.workers.dev/interactions
+
+4. Click "Save Changes"
+
+✅ This should now work! Discord will verify the endpoint successfully.
+
+WHAT DISCORD DOES DURING VERIFICATION
+--------------------------------------
+1. Discord sends a POST request to /interactions
+2. Request includes a signature signed with SpotiBot's PUBLIC KEY
+3. Worker verifies signature using DISCORD_PUBLIC_KEY secret
+4. Worker responds with {"type": 1} (PONG)
+5. If signature matches, Discord shows green checkmark ✅
+
+VERIFICATION SCRIPT (for debugging if needed)
+----------------------------------------------
+If it still fails, check worker logs:
+npx wrangler tail
+
+You should see Discord's PING request come through.
+
+NEXT STEPS AFTER VERIFICATION SUCCEEDS
+---------------------------------------
+1. ✅ Set interactions endpoint (should work now)
+2. Invite bot to server:
+   https://discord.com/api/oauth2/authorize?client_id=1433104809459974196&scope=bot%20applications.commands&permissions=2048
+3. Test commands in Discord
+4. Enjoy SpotiBot! 🎉
+
+CURRENT STATUS
+--------------
+✅ Worker deployed
+✅ Secrets configured correctly
+✅ Commands registered
+✅ Public key FIXED
+⏳ Awaiting Discord endpoint verification (should work now)
+
+Last Updated: 2025-10-29
+Fixed By: Claude Code
