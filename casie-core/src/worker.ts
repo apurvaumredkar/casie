@@ -136,9 +136,9 @@ export default {
           ctx.waitUntil(handleWeatherDeferred(interaction, env));
           return json({ type: DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE });
         case "clear":
-          // Defer response and process in background
+          // Process silently in background (no response)
           ctx.waitUntil(handleClearDeferred(interaction, env));
-          return json({ type: DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE });
+          return json({ type: DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE, flags: 64 }); // Ephemeral, will be deleted
         default:
           return json({
             type: CHANNEL_MESSAGE_WITH_SOURCE,
@@ -257,14 +257,16 @@ async function handleClearDeferred(
   try {
     const channelId = interaction.channel_id;
     if (!channelId) {
-      await sendFollowup(interaction, "I couldn't determine the channel ID.");
+      // Delete the initial deferred response silently
+      await deleteOriginalMessage(interaction);
       return;
     }
 
     // Fetch recent messages (up to 100)
     const messages = await fetchChannelMessages(channelId, env.DISCORD_BOT_TOKEN);
     if (!messages || messages.length === 0) {
-      await sendFollowup(interaction, "No messages found to delete.");
+      // Delete the initial deferred response silently
+      await deleteOriginalMessage(interaction);
       return;
     }
 
@@ -276,30 +278,24 @@ async function handleClearDeferred(
     });
 
     if (deletableMessages.length === 0) {
-      await sendFollowup(
-        interaction,
-        "No messages found that can be deleted (messages must be less than 14 days old)."
-      );
+      // Delete the initial deferred response silently
+      await deleteOriginalMessage(interaction);
       return;
     }
 
     // Bulk delete messages
-    const deleted = await bulkDeleteMessages(
+    await bulkDeleteMessages(
       channelId,
       deletableMessages.map((msg: any) => msg.id),
       env.DISCORD_BOT_TOKEN
     );
 
-    if (deleted) {
-      await sendFollowup(
-        interaction,
-        `✅ Successfully deleted ${deletableMessages.length} message(s) from this channel.`
-      );
-    } else {
-      await sendFollowup(interaction, "Failed to delete messages. Please try again.");
-    }
+    // Delete the initial deferred response silently (no success message)
+    await deleteOriginalMessage(interaction);
   } catch (err: any) {
-    await sendFollowup(interaction, `Error clearing messages: ${err.message}`);
+    // Even on error, delete the response silently
+    await deleteOriginalMessage(interaction);
+    console.error('Error clearing messages:', err.message);
   }
 }
 
@@ -415,6 +411,17 @@ async function sendFollowup(
     body: JSON.stringify({
       content: content,
     }),
+  });
+}
+
+// ---- Delete original interaction response ----
+async function deleteOriginalMessage(
+  interaction: DiscordInteraction
+): Promise<void> {
+  const url = `https://discord.com/api/v10/webhooks/${interaction.application_id}/${interaction.token}/messages/@original`;
+
+  await fetch(url, {
+    method: "DELETE",
   });
 }
 
