@@ -1,12 +1,12 @@
 #!/bin/bash
 
-# SpotiBot Secrets Setup Script
-# This script helps you set all required secrets for the monica-spotify worker
+# CASIE Spotify Secrets Setup Script
+# This script helps you set all required secrets for the casie-spotify worker
 
-echo "🔐 SpotiBot Secrets Setup"
+echo "🔐 CASIE Spotify Secrets Setup"
 echo "========================"
 echo ""
-echo "This script will help you set up the required secrets for SpotiBot."
+echo "This script will help you set up the required secrets for CASIE Spotify."
 echo "You'll need to provide values for each secret."
 echo ""
 
@@ -25,7 +25,7 @@ echo "  5. SPOTIFY_REDIRECT_URI - Your worker URL + /oauth/callback"
 echo "  6. OPENROUTER_API_KEY - From OpenRouter (https://openrouter.ai/keys)"
 echo ""
 
-echo "💡 Tip: If you already have these set for the main Monica worker,"
+echo "💡 Tip: If you already have these set for the main CASIE worker,"
 echo "   you can use the same OPENROUTER_API_KEY for both workers."
 echo ""
 
@@ -59,12 +59,12 @@ npx wrangler secret put SPOTIFY_CLIENT_SECRET
 
 echo ""
 echo "5/6: Setting SPOTIFY_REDIRECT_URI..."
-echo "💡 For production, this should be: https://monica-spotify.YOUR_SUBDOMAIN.workers.dev/oauth/callback"
+echo "💡 For production, this should be: https://casie-spotify.YOUR_SUBDOMAIN.workers.dev/oauth/callback"
 npx wrangler secret put SPOTIFY_REDIRECT_URI
 
 echo ""
 echo "6/6: Setting OPENROUTER_API_KEY..."
-echo "💡 You can use the same key as your main Monica worker"
+echo "💡 You can use the same key as your main CASIE worker"
 npx wrangler secret put OPENROUTER_API_KEY
 
 echo ""

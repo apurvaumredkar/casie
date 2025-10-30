@@ -1,7 +1,7 @@
 # Wrangler configuration for Spotify Bot worker
 # See: https://developers.cloudflare.com/workers/configuration/
 
-name = "monica-spotify"
+name = "casie-spotify"
 main = "src/index.ts"
 compatibility_date = "2025-10-01"
 
@@ -25,8 +25,8 @@ OPENROUTER_MODEL = "meta-llama/llama-4-scout:free"
 
 # Example route configuration (uncomment and adjust for your domain):
 # [[routes]]
-# pattern = "spotify.monica.example.com/*"
-# zone_name = "monica.example.com"
+# pattern = "spotify.casie.example.com/*"
+# zone_name = "casie.example.com"
 
 # Build configuration
 [build]
@@ -41,11 +41,15 @@ format = "service-worker"
 binding = "SPOTIFY_TOKENS"
 id = "4e9afc5c83394af987c57a83012e30b8"
 
+# Cloudflare AI binding
+[ai]
+binding = "AI"
+
 # Optional: Durable Objects for more complex state management
 # [[durable_objects.bindings]]
 # name = "SPOTIFY_SESSION"
 # class_name = "SpotifySession"
-# script_name = "monica-spotify"
+# script_name = "casie-spotify"
 
 # Observability
 [observability]

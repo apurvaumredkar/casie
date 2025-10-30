@@ -1,7 +1,7 @@
 {
-  "name": "monica-spotify",
+  "name": "casie-spotify",
   "version": "1.0.0",
-  "description": "SpotiBot - Discord bot for Spotify control via Cloudflare Workers",
+  "description": "CASIE Spotify - Discord bot for Spotify control via Cloudflare Workers",
   "main": "src/index.ts",
   "type": "module",
   "scripts": {

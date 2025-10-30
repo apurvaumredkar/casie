@@ -22,6 +22,7 @@ export interface Intent {
 export interface OpenRouterEnv {
   OPENROUTER_API_KEY: string;
   OPENROUTER_MODEL?: string;
+  AI: Ai; // Cloudflare AI binding
 }
 
 const SYSTEM_PROMPT = `
@@ -126,9 +127,42 @@ const SYSTEM_PROMPT = `
 `;
 
 /**
- * Call OpenRouter API to interpret user query
+ * Call LLM to interpret user query - tries Cloudflare AI first, falls back to OpenRouter
  */
-async function callOpenRouter(
+async function callLLM(
+  query: string,
+  env: OpenRouterEnv
+): Promise<string> {
+  try {
+    // Try Cloudflare AI first
+    console.log("Attempting Cloudflare AI for intent parsing...");
+    const response = await env.AI.run("@cf/meta/llama-3.2-3b-instruct", {
+      messages: [
+        { role: "system", content: SYSTEM_PROMPT },
+        { role: "user", content: query },
+      ],
+      max_tokens: 200,
+    });
+
+    const content = response.response;
+    if (content && content.trim().length > 0) {
+      console.log("Cloudflare AI succeeded for intent parsing");
+      return content.trim();
+    }
+
+    console.log("Cloudflare AI returned empty response, trying OpenRouter...");
+  } catch (err: any) {
+    console.log(`Cloudflare AI failed: ${err.message}, falling back to OpenRouter`);
+  }
+
+  // Fallback to OpenRouter
+  return await callOpenRouterFallback(query, env);
+}
+
+/**
+ * OpenRouter fallback - only called when Cloudflare AI fails
+ */
+async function callOpenRouterFallback(
   query: string,
   env: OpenRouterEnv
 ): Promise<string> {
@@ -139,8 +173,8 @@ async function callOpenRouter(
     headers: {
       'Authorization': `Bearer ${env.OPENROUTER_API_KEY}`,
       'Content-Type': 'application/json',
-      'HTTP-Referer': 'https://github.com/spotibot', // Optional but recommended
-      'X-Title': 'SpotiBot', // Optional but recommended
+      'HTTP-Referer': 'https://github.com/spotibot',
+      'X-Title': 'SpotiBot',
     },
     body: JSON.stringify({
       model,
@@ -150,7 +184,6 @@ async function callOpenRouter(
       ],
       temperature: 0.3, // Lower temperature for more consistent JSON output
       max_tokens: 200,
-      // Note: response_format not supported by Meta Llama models
     }),
   });
 
@@ -240,7 +273,7 @@ export async function interpretQuery(
   }
 
   try {
-    const llmResponse = await callOpenRouter(query, env);
+    const llmResponse = await callLLM(query, env);
     const intent = parseIntent(llmResponse);
 
     console.log('Query:', query);

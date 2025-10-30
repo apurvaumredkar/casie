@@ -1,11 +1,11 @@
 // ======================================================
-// Monica Discord Worker  —  TypeScript version
+// CASIE Discord Worker  —  TypeScript version
 // ======================================================
 
 // ========== SYSTEM PROMPT ==========
 const SYSTEM_PROMPT = `
 <assistant>
-    <role>You are Monica, a personal AI assistant.</role>
+    <role>You are CASIE, a personal AI assistant.</role>
     <platform>Discord (Direct Messages). You are an online AI service accessed through Discord.</platform>
     <behavior>
         Respond to the user in a friendly, concise, and helpful manner.
@@ -40,7 +40,8 @@ const CHANNEL_MESSAGE_WITH_SOURCE = 4;
 const DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE = 5;
 
 // LLM config constants
-const LLM_MODEL = "meta-llama/llama-4-scout:free";
+const CF_AI_MODEL = "@cf/meta/llama-3.2-3b-instruct"; // Cloudflare AI primary model
+const OPENROUTER_MODEL = "meta-llama/llama-4-scout:free"; // OpenRouter fallback
 const DEFAULT_TEMPERATURE = 0.4;
 
 // ========== TYPES ==========
@@ -52,6 +53,7 @@ interface Env {
   WEATHER_API_KEY: string;
   WEATHER_CHANNEL_ID: string;
   CRON_SECRET_TOKEN: string;
+  AI: Ai; // Cloudflare AI binding
 }
 
 interface DiscordOption {
@@ -94,7 +96,7 @@ export default {
     }
 
     if (request.method !== "POST")
-      return new Response("Monica is running on Discord", { status: 200 });
+      return new Response("CASIE is running on Discord", { status: 200 });
 
     const signature = request.headers.get("x-signature-ed25519");
     const timestamp = request.headers.get("x-signature-timestamp");
@@ -131,7 +133,7 @@ export default {
           return json({ type: DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE });
         case "weather":
           // Defer response and process in background
-          ctx.waitUntil(handleWeatherDeferred(interaction, env, request));
+          ctx.waitUntil(handleWeatherDeferred(interaction, env));
           return json({ type: DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE });
         case "clear":
           // Defer response and process in background
@@ -160,15 +162,15 @@ async function handleAskDeferred(
       interaction.data?.options?.[0]?.value?.trim() ||
       "please provide a query next time.";
 
-    const llmResponse = await callOpenRouter(
+    const llmResponse = await callLLM(
+      env.AI,
       env.OPENROUTER_API_KEY,
       SYSTEM_PROMPT,
-      userPrompt
+      userPrompt,
+      800
     );
 
-    const replyText =
-      llmResponse?.choices?.[0]?.message?.content?.trim() ||
-      "i was unable to generate a response.";
+    const replyText = llmResponse || "i was unable to generate a response.";
 
     await sendFollowup(interaction, replyText);
   } catch (err: any) {
@@ -196,6 +198,7 @@ async function handleSearchDeferred(
     const summary = await summarizeResults(
       searchResults,
       query,
+      env.AI,
       env.OPENROUTER_API_KEY
     );
     const reply = summary || "I couldn't summarize the results.";
@@ -208,8 +211,7 @@ async function handleSearchDeferred(
 
 async function handleWeatherDeferred(
   interaction: DiscordInteraction,
-  env: Env,
-  request: Request
+  env: Env
 ): Promise<void> {
   try {
     // Get location from parameter or default to Buffalo NY
@@ -237,6 +239,7 @@ async function handleWeatherDeferred(
     const summary = await summarizeWeather(
       locationForLLM,
       weatherData,
+      env.AI,
       env.OPENROUTER_API_KEY
     );
     const reply = summary || "I couldn't summarize the weather information.";
@@ -342,6 +345,7 @@ async function handleCronWeather(
     const summary = await summarizeWeather(
       locationForLLM,
       weatherData,
+      env.AI,
       env.OPENROUTER_API_KEY
     );
 
@@ -455,7 +459,7 @@ async function braveSearch(
 ): Promise<BraveResult[]> {
   const url = `https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(
     query
-  )}`;
+  )}&count=10`; // Fetch more results for better filtering
   const headers = {
     "X-Subscription-Token": apiKey,
     Accept: "application/json",
@@ -464,80 +468,228 @@ async function braveSearch(
   const resp = await fetch(url, { headers });
   if (!resp.ok) throw new Error(`Brave API returned ${resp.status}`);
   const data: any = await resp.json();
-  return (data.web?.results || []).slice(0, 5).map((r: any) => ({
+
+  const results = (data.web?.results || []).map((r: any) => ({
     title: r.title,
     description: r.description,
     url: r.url,
   }));
+
+  // Apply intelligent filtering and scoring
+  return filterAndRankResults(results, query);
+}
+
+/**
+ * Filter and rank search results based on query relevance
+ * Reduces token waste by removing irrelevant results
+ */
+function filterAndRankResults(
+  results: BraveResult[],
+  query: string
+): BraveResult[] {
+  const queryLower = query.toLowerCase();
+  const queryTerms = queryLower.split(/\s+/).filter(term => term.length > 2);
+
+  // Score each result based on relevance
+  const scored = results.map(result => {
+    let score = 0;
+    const titleLower = result.title.toLowerCase();
+    const descLower = result.description.toLowerCase();
+    const combined = `${titleLower} ${descLower}`;
+
+    // Exact phrase match in title (highest priority)
+    if (titleLower.includes(queryLower)) {
+      score += 100;
+    }
+
+    // Exact phrase match in description
+    if (descLower.includes(queryLower)) {
+      score += 50;
+    }
+
+    // Individual term matches
+    queryTerms.forEach(term => {
+      // Title matches worth more
+      if (titleLower.includes(term)) {
+        score += 10;
+      }
+      // Description matches
+      if (descLower.includes(term)) {
+        score += 5;
+      }
+    });
+
+    // Penalize results with extra unrelated terms (for specific queries)
+    // If query has 2-3 terms and is likely a specific search
+    if (queryTerms.length >= 2 && queryTerms.length <= 3) {
+      const resultTerms = combined.split(/\s+/).length;
+      const queryTermCount = queryTerms.length;
+
+      // If result has way more terms than query, it might be less relevant
+      if (resultTerms > queryTermCount * 5) {
+        score -= 5;
+      }
+    }
+
+    // Boost authoritative domains for factual queries
+    const authoritativeDomains = ['wikipedia.org', 'gov', 'edu', '.org'];
+    if (authoritativeDomains.some(domain => result.url.includes(domain))) {
+      if (queryLower.startsWith('who') || queryLower.startsWith('what') ||
+          queryLower.startsWith('when') || queryLower.startsWith('where')) {
+        score += 20;
+      }
+    }
+
+    return { result, score };
+  });
+
+  // Sort by score (descending) and return top 5 results
+  return scored
+    .filter(item => item.score > 0) // Remove completely irrelevant results
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 5)
+    .map(item => item.result);
+}
+
+// ========== LLM FUNCTIONS ==========
+
+/**
+ * Main LLM function - tries Cloudflare AI first, falls back to OpenRouter
+ * @returns The text response from the LLM
+ */
+async function callLLM(
+  ai: Ai,
+  openRouterKey: string,
+  systemPrompt: string,
+  userPrompt: string,
+  maxTokens: number = 800
+): Promise<string | null> {
+  try {
+    // Try Cloudflare AI first
+    console.log("Attempting Cloudflare AI...");
+    const response = await ai.run(CF_AI_MODEL, {
+      messages: [
+        { role: "system", content: systemPrompt.trim() },
+        { role: "user", content: userPrompt.trim() },
+      ],
+      max_tokens: maxTokens,
+    });
+
+    const content = response.response;
+    if (content && content.trim().length > 0) {
+      console.log("Cloudflare AI succeeded");
+      return content.trim();
+    }
+
+    console.log("Cloudflare AI returned empty response, trying OpenRouter...");
+  } catch (err: any) {
+    console.log(`Cloudflare AI failed: ${err.message}, falling back to OpenRouter`);
+  }
+
+  // Fallback to OpenRouter
+  return await callOpenRouterFallback(openRouterKey, systemPrompt, userPrompt, maxTokens);
+}
+
+/**
+ * OpenRouter fallback - only called when Cloudflare AI fails
+ */
+async function callOpenRouterFallback(
+  apiKey: string,
+  systemPrompt: string,
+  userPrompt: string,
+  maxTokens: number = 800
+): Promise<string | null> {
+  try {
+    const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+        "X-Title": "casie-discord-worker",
+        "HTTP-Referer": "https://workers.dev",
+      },
+      body: JSON.stringify({
+        model: OPENROUTER_MODEL,
+        messages: [
+          { role: "system", content: systemPrompt.trim() },
+          { role: "user", content: userPrompt.trim() },
+        ],
+        temperature: DEFAULT_TEMPERATURE,
+        max_tokens: maxTokens,
+      }),
+    });
+
+    if (!res.ok) {
+      throw new Error(`OpenRouter API returned ${res.status}`);
+    }
+
+    const data: any = await res.json();
+    return data.choices?.[0]?.message?.content?.trim() ?? null;
+  } catch (err: any) {
+    console.error("OpenRouter fallback also failed:", err.message);
+    throw new Error("All LLM providers failed");
+  }
 }
 
 // ---- Summarization ----
 async function summarizeResults(
   results: BraveResult[],
   query: string,
-  apiKey: string
+  ai: Ai,
+  openRouterKey: string
 ): Promise<string | null> {
-  const systemPrompt = `
-You are Monica, a concise assistant summarizing web results for Discord users.
-Combine the snippets into a short, factual summary (≤150 words) and cite key URLs in parentheses.`;
+  const systemPrompt = `You are CASIE, an intelligent search assistant for Discord users.
+
+CRITICAL INSTRUCTIONS - Read carefully:
+
+1. QUERY TYPE DETECTION:
+   - FACTUAL QUERIES (who/what/when/where/which): Answer directly in 1-2 sentences max
+     Examples: "who is the president", "what is the capital", "when did X happen"
+     Response: Just answer the question directly, no fluff
+
+   - SPECIFIC PERSON/ENTITY QUERIES: Only use results EXACTLY matching the query
+     Examples: "John Doe on LinkedIn", "Tesla stock price", "React documentation"
+     Response: Filter to only the MOST RELEVANT result, 2-3 sentences
+
+   - GENERAL/EXPLORATORY QUERIES: Provide comprehensive summary
+     Examples: "how to learn Python", "best practices for X", "overview of Y"
+     Response: Synthesize information, 100-150 words, multiple perspectives
+
+2. RESULT FILTERING:
+   - If query mentions a specific name/entity, ONLY use results that EXACTLY match it
+   - Ignore results about similar but different entities (different people with similar names)
+   - If no exact matches exist, say "No exact matches found for [query]"
+
+3. RESPONSE LENGTH:
+   - Factual: 1-2 sentences (10-30 words)
+   - Specific: 2-3 sentences (30-60 words)
+   - General: Full summary (100-150 words)
+
+4. CITATIONS:
+   - Always cite sources with (URL) inline
+   - For factual queries: cite the primary source only
+   - For general queries: cite multiple sources
+
+5. FORMAT:
+   - No preambles like "Here is a summary" or "Based on the results"
+   - Start directly with the answer
+   - Be precise and factual
+   - No unnecessary elaboration`;
 
   const joined = results
     .map(
-      (r, i) => `(${i + 1}) ${r.title}\n${r.description}\nURL: ${r.url}`
+      (r, i) => `[Result ${i + 1}]\nTitle: ${r.title}\nDescription: ${r.description}\nURL: ${r.url}`
     )
     .join("\n\n");
 
-  const body = {
-    model: LLM_MODEL,
-    messages: [
-      { role: "system", content: systemPrompt },
-      { role: "user", content: `Query: ${query}\n\nResults:\n${joined}` },
-    ],
-    temperature: DEFAULT_TEMPERATURE,
-    max_tokens: 600,
-  };
+  const userPrompt = `Query: "${query}"
 
-  const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(body),
-  });
+Search Results:
+${joined}
 
-  if (!res.ok) throw new Error(`OpenRouter API returned ${res.status}`);
-  const data: any = await res.json();
-  return data.choices?.[0]?.message?.content?.trim() ?? null;
-}
+Provide an intelligent response based on the query type (factual, specific, or general).`;
 
-// ---- General LLM Chat ----
-async function callOpenRouter(
-  apiKey: string,
-  systemPrompt: string,
-  userPrompt: string
-): Promise<any> {
-  const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      authorization: `bearer ${apiKey}`,
-      "content-type": "application/json",
-      "x-title": "monica-discord-worker",
-      "http-referer": "https://workers.dev",
-    },
-    body: JSON.stringify({
-      model: LLM_MODEL,
-      messages: [
-        { role: "system", content: systemPrompt.trim() },
-        { role: "user", content: userPrompt.trim() },
-      ],
-      temperature: DEFAULT_TEMPERATURE,
-      max_tokens: 800,
-    }),
-  });
-
-  if (!res.ok) throw new Error(`OpenRouter API returned ${res.status}`);
-  return res.json();
+  return await callLLM(ai, openRouterKey, systemPrompt, userPrompt, 600);
 }
 
 // ---- Weather API ----
@@ -555,10 +707,11 @@ async function getWeatherData(
 async function summarizeWeather(
   locationData: any,
   weatherData: any,
-  apiKey: string
+  ai: Ai,
+  openRouterKey: string
 ): Promise<string | null> {
   const systemPrompt = `
-You are Monica, a helpful and engaging weather assistant.
+You are CASIE, a helpful and engaging weather assistant.
 
 Your task is to summarize weather information in a friendly, conversational, and contextually aware manner.
 
@@ -590,28 +743,9 @@ Wind: ${weatherData.current.wind_kph} km/h ${weatherData.current.wind_dir}
 Precipitation: ${weatherData.current.precip_mm} mm
 Cloud Cover: ${weatherData.current.cloud}%`;
 
-  const body = {
-    model: LLM_MODEL,
-    messages: [
-      { role: "system", content: systemPrompt },
-      { role: "user", content: `Summarize this weather data:\n\n${weatherInfo}` },
-    ],
-    temperature: DEFAULT_TEMPERATURE,
-    max_tokens: 500,
-  };
+  const userPrompt = `Summarize this weather data:\n\n${weatherInfo}`;
 
-  const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(body),
-  });
-
-  if (!res.ok) throw new Error(`OpenRouter API returned ${res.status}`);
-  const data: any = await res.json();
-  return data.choices?.[0]?.message?.content?.trim() ?? null;
+  return await callLLM(ai, openRouterKey, systemPrompt, userPrompt, 500);
 }
 
 // ---- Discord Channel Messages ----

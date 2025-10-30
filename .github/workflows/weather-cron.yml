@@ -13,8 +13,9 @@ jobs:
     steps:
       - name: Trigger Weather Update
         run: |
+          # Update this URL to match your deployed worker URL
           response=$(curl -s -w "\n%{http_code}" -X GET \
-            "https://monica-core.apoorv-umredkar.workers.dev/cron/weather" \
+            "https://casie-core.apoorv-umredkar.workers.dev/cron/weather" \
             -H "Authorization: Bearer ${{ secrets.WEATHER_CRON_SECRET }}")
 
           http_code=$(echo "$response" | tail -n1)

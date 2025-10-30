@@ -16,7 +16,6 @@ import {
   messageResponse,
   deferredResponse,
   editOriginalMessage,
-  updateMessageResponse,
   InteractionType,
   DiscordInteraction,
 } from './utils/discord';
@@ -44,6 +43,7 @@ export interface Env {
   OPENROUTER_API_KEY: string;
   OPENROUTER_MODEL?: string;
   SPOTIFY_TOKENS: KVNamespace;
+  AI: Ai; // Cloudflare AI binding
 }
 
 export default {
@@ -147,11 +147,6 @@ async function handleDiscordInteraction(
         true
       );
     }
-  }
-
-  // Handle button interactions (MESSAGE_COMPONENT)
-  if (interaction.type === InteractionType.MESSAGE_COMPONENT) {
-    return await handleButtonInteraction(interaction, env);
   }
 
   return new Response('Unknown interaction type', { status: 400 });
@@ -264,83 +259,6 @@ async function handleSpotifyNL(
   return deferredResp;
 }
 
-/**
- * Handle button interactions (Play/Cancel buttons from spotify-search)
- */
-async function handleButtonInteraction(
-  interaction: DiscordInteraction,
-  env: Env
-): Promise<Response> {
-  const userId = interaction.member?.user?.id || interaction.user?.id;
-  const customId = (interaction as any).data?.custom_id;
-
-  if (!userId || !customId) {
-    return updateMessageResponse('❌ Invalid interaction.');
-  }
-
-  // Handle cancel button
-  if (customId === 'cancel_search') {
-    return updateMessageResponse('❌ Search cancelled.');
-  }
-
-  // Handle play button
-  if (customId.startsWith('play_track_')) {
-    const trackUri = customId.replace('play_track_', '');
-
-    // Check if user is linked
-    if (!(await isUserLinked(env.SPOTIFY_TOKENS, userId))) {
-      return updateMessageResponse(
-        '❌ You need to link your Spotify account first! Use `/linkspotify`.'
-      );
-    }
-
-    let tokens = await getUserTokens(env.SPOTIFY_TOKENS, userId);
-
-    if (!tokens) {
-      return updateMessageResponse(
-        '❌ Your session has expired. Please relink with `/linkspotify`.'
-      );
-    }
-
-    // Refresh token if expired
-    if (isTokenExpired(tokens)) {
-      try {
-        tokens = await refreshAccessToken(
-          tokens.refresh_token,
-          env.SPOTIFY_CLIENT_ID,
-          env.SPOTIFY_CLIENT_SECRET
-        );
-        await storeUserTokens(env.SPOTIFY_TOKENS, userId, tokens);
-      } catch (error) {
-        return updateMessageResponse(
-          '❌ Failed to refresh your Spotify token. Please relink with `/linkspotify`.'
-        );
-      }
-    }
-
-    const client = new SpotifyClient(tokens.access_token);
-
-    try {
-      // Play the track
-      await (client as any).request('/me/player/play', {
-        method: 'PUT',
-        body: JSON.stringify({ uris: [trackUri] }),
-      });
-
-      return updateMessageResponse('▶️ Now playing! Check your Spotify device.');
-    } catch (error: any) {
-      if (error?.status === 404) {
-        return updateMessageResponse(
-          '❌ No active Spotify device found. Open Spotify on any device and try again.'
-        );
-      }
-      console.error('Button play error:', error);
-      return updateMessageResponse('❌ Failed to play track. Please try again.');
-    }
-  }
-
-  return updateMessageResponse('❌ Unknown button action.');
-}
 
 /**
  * Handle Spotify OAuth callback

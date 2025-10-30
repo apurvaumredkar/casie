@@ -1,12 +1,12 @@
-# Monica - AI Bot Suite on Cloudflare Workers
+# CASIE - Context-Aware Small Intelligence on Edge
 
-A production-ready Discord bot platform demonstrating modern serverless architecture on Cloudflare's edge network. This project showcases how to build scalable, globally distributed Discord bots without traditional server infrastructure.
+A production-ready Discord bot platform demonstrating modern serverless architecture on Cloudflare's edge network. CASIE (Context-Aware Small Intelligence on Edge) showcases how to build scalable, globally distributed Discord bots without traditional server infrastructure, using lightweight AI models running at the edge.
 
 ---
 
 ## 🎯 Overview
 
-Monica is a **dual-bot platform** that demonstrates best practices for building Discord bots using serverless technology. Instead of running on traditional servers, these bots run on Cloudflare Workers - a serverless platform that executes code at 300+ edge locations worldwide.
+CASIE is a **dual-bot platform** that demonstrates best practices for building Discord bots using serverless technology. Instead of running on traditional servers, these bots run on Cloudflare Workers - a serverless platform that executes code at 300+ edge locations worldwide.
 
 **What makes this project unique:**
 - Zero server management - deploy and forget

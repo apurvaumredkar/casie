@@ -1,11 +1,11 @@
 /**
- * /spotify-search Command Handler
+ * /play Command Handler
  *
- * Searches Spotify for tracks and displays results with Play/Cancel buttons.
- * Bypasses LLM for direct, fast search.
+ * Searches Spotify for tracks and immediately plays the top result.
+ * No confirmation buttons - instant playback.
  */
 
-import { DiscordInteraction, messageResponse, messageResponseWithComponents } from '../utils/discord';
+import { DiscordInteraction, messageResponse } from '../utils/discord';
 import { SpotifyClient, SpotifyAPIError } from '../spotify/client';
 import { getUserTokens, isUserLinked, storeUserTokens } from '../utils/storage';
 import { isTokenExpired, refreshAccessToken } from '../spotify/oauth';
@@ -67,7 +67,7 @@ export async function handleSpotifySearch(interaction: DiscordInteraction, env: 
   const client = new SpotifyClient(tokens.access_token);
 
   try {
-    // Search Spotify for tracks (no LLM involved)
+    // Search Spotify for tracks
     const results = await client.search(query, ['track'], 5);
 
     if (!results || !results.tracks || results.tracks.items.length === 0) {
@@ -84,36 +84,65 @@ export async function handleSpotifySearch(interaction: DiscordInteraction, env: 
     const trackUri = topTrack.uri;
     const trackUrl = topTrack.external_urls?.spotify || '';
 
-    // Create button components
-    const components = [
-      {
-        type: 1, // ACTION_ROW
-        components: [
-          {
-            type: 2, // BUTTON
-            style: 3, // SUCCESS (green)
-            label: 'Play',
-            custom_id: `play_track_${trackUri}`,
-          },
-          {
-            type: 2, // BUTTON
-            style: 4, // DANGER (red)
-            label: 'Cancel',
-            custom_id: 'cancel_search',
-          },
-        ],
-      },
-    ];
+    // Immediately play the track
+    try {
+      // Get available devices
+      const devices = await client.getDevices();
 
-    const message =
-      `🔍 **Search Results for "${query}"**\n\n` +
-      `🎵 **${trackName}**\n` +
-      `👤 ${artistNames}\n` +
-      `💿 ${albumName}\n\n` +
-      (trackUrl ? `🔗 [Open in Spotify](${trackUrl})\n\n` : '') +
-      `Press "Play" to start playback or "Cancel" to dismiss.`;
+      if (!devices || devices.length === 0) {
+        return messageResponse(
+          `❌ No active Spotify devices found. Please open Spotify on any device and try again.`,
+          true
+        );
+      }
 
-    return messageResponseWithComponents(message, components, true);
+      // Find an active device or use the first available one
+      let targetDevice = devices.find((d: any) => d.is_active);
+      if (!targetDevice) {
+        targetDevice = devices[0];
+      }
+
+      // Start playback with specific track URI
+      await (client as any).request(`/me/player/play?device_id=${targetDevice.id}`, {
+        method: 'PUT',
+        body: JSON.stringify({ uris: [trackUri] }),
+      });
+
+      // Send success message
+      const message =
+        `▶️ **Now Playing**\n\n` +
+        `🎵 **${trackName}**\n` +
+        `👤 ${artistNames}\n` +
+        `💿 ${albumName}\n\n` +
+        (trackUrl ? `🔗 [Open in Spotify](${trackUrl})` : '');
+
+      return messageResponse(message, true);
+    } catch (playbackError) {
+      if (playbackError instanceof SpotifyAPIError) {
+        console.error('Spotify playback error:', playbackError.status, playbackError.body);
+
+        // Handle common playback errors
+        if (playbackError.status === 404) {
+          return messageResponse(
+            `❌ No active device found. Please open Spotify on any device and try again.`,
+            true
+          );
+        } else if (playbackError.status === 403) {
+          return messageResponse(
+            `❌ Premium account required for playback control. Please upgrade to Spotify Premium.`,
+            true
+          );
+        }
+
+        return messageResponse(
+          `❌ Failed to start playback (${playbackError.status}). Please try again.`,
+          true
+        );
+      }
+
+      console.error('Playback error:', playbackError);
+      return messageResponse('❌ Failed to start playback. Please try again.', true);
+    }
   } catch (error) {
     if (error instanceof SpotifyAPIError) {
       console.error('Spotify search error:', error.status, error.body);
