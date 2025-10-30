@@ -17,7 +17,7 @@ const APPLICATION_ID = process.env.APPLICATION_ID || 'YOUR_APPLICATION_ID_HERE';
 const commands = [
   {
     name: 'linkspotify',
-    description: 'Link your Spotify account to SpotiBot',
+    description: 'Link your Spotify account to CASIE Spotify',
     dm_permission: false,
   },
   {

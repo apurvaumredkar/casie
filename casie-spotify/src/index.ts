@@ -1,5 +1,5 @@
 /**
- * SpotiBot - Spotify Discord Bot Worker
+ * CASIE Spotify - Spotify Discord Bot Worker
  *
  * Main entry point for the Cloudflare Worker that handles Discord interactions
  * and Spotify API integration.
@@ -57,7 +57,7 @@ export default {
 
     // Health check endpoint
     if (url.pathname === '/health' && request.method === 'GET') {
-      return new Response(JSON.stringify({ status: 'ok', bot: 'SpotiBot' }), {
+      return new Response(JSON.stringify({ status: 'ok', bot: 'CASIE Spotify' }), {
         headers: { 'Content-Type': 'application/json' },
       });
     }
@@ -69,7 +69,7 @@ export default {
 
     // GET request to root returns a simple message
     if (url.pathname === '/' && request.method === 'GET') {
-      return new Response('SpotiBot - Spotify Discord Bot', { status: 200 });
+      return new Response('CASIE Spotify - Spotify Discord Bot', { status: 200 });
     }
 
     return new Response('Not Found', { status: 404 });
@@ -273,7 +273,7 @@ async function handleOAuthCallback(url: URL, env: Env): Promise<Response> {
     return new Response(
       htmlResponse(
         '❌ Authorization Denied',
-        'You denied access to your Spotify account. Please try again if you want to use SpotiBot.'
+        'You denied access to your Spotify account. Please try again if you want to use CASIE Spotify.'
       ),
       { headers: { 'Content-Type': 'text/html' } }
     );
@@ -315,7 +315,7 @@ async function handleOAuthCallback(url: URL, env: Env): Promise<Response> {
     return new Response(
       htmlResponse(
         '✅ Spotify Account Linked!',
-        'Your Spotify account has been successfully linked to SpotiBot. You can now use commands like /play, /pause, /next, and more in Discord!'
+        'Your Spotify account has been successfully linked to CASIE Spotify. You can now use commands like /play, /pause, /next, and more in Discord!'
       ),
       { headers: { 'Content-Type': 'text/html' } }
     );

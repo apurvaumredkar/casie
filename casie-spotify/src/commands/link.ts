@@ -38,7 +38,7 @@ export async function handleLinkSpotify(interaction: DiscordInteraction, env: En
 
   return messageResponse(
     `🎵 **Link your Spotify account**\n\n` +
-      `Click the link below to authorize SpotiBot to access your Spotify account:\n\n` +
+      `Click the link below to authorize CASIE Spotify to access your Spotify account:\n\n` +
       `${authUrl}\n\n` +
       `This link will expire in 10 minutes.`,
     true // Ephemeral - only visible to the user
