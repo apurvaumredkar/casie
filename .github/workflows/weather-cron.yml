@@ -2,8 +2,9 @@ name: Daily Weather Updates
 
 on:
   schedule:
-    # Runs at 7 AM Eastern Time (12 PM UTC) on weekdays
-    - cron: '0 12 * * 1-5'
+    # TESTING: Runs every 5 minutes (GitHub Actions minimum interval)
+    # TODO: Change back to '0 12 * * 1-5' after testing
+    - cron: '*/5 * * * *'
   workflow_dispatch: # Allows manual triggering from Actions tab
 
 jobs:

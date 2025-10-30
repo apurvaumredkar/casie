@@ -212,53 +212,16 @@ async function handleWeatherDeferred(
   request: Request
 ): Promise<void> {
   try {
-    // Check if user provided a location parameter
+    // Get location from parameter or default to Buffalo NY
     const userProvidedLocation = interaction.data?.options?.[0]?.value?.trim();
-
-    let locationCity: string;
-    let locationRegion: string = "";
-    let locationCountry: string = "";
-
-    if (userProvidedLocation) {
-      // User specified a location, use it directly
-      locationCity = userProvidedLocation;
-    } else {
-      // No location provided, try to detect from IP
-      const userIP =
-        request.headers.get("CF-Connecting-IP") ||
-        request.headers.get("X-Forwarded-For")?.split(",")[0].trim() ||
-        request.headers.get("X-Real-IP") ||
-        "";
-
-      if (!userIP) {
-        await sendFollowup(
-          interaction,
-          "I couldn't determine your location. Please provide a location:\n`/weather location:Buffalo`"
-        );
-        return;
-      }
-
-      // Get location from IP
-      const locationData = await getLocationFromIP(userIP);
-      if (!locationData) {
-        await sendFollowup(
-          interaction,
-          "I couldn't determine your location from IP. Please provide a location:\n`/weather location:Buffalo`"
-        );
-        return;
-      }
-
-      locationCity = locationData.city;
-      locationRegion = locationData.regionName;
-      locationCountry = locationData.country;
-    }
+    const locationQuery = userProvidedLocation || "Buffalo NY";
 
     // Get weather data for the location
-    const weatherData = await getWeatherData(locationCity, env.WEATHER_API_KEY);
+    const weatherData = await getWeatherData(locationQuery, env.WEATHER_API_KEY);
     if (!weatherData) {
       await sendFollowup(
         interaction,
-        `I couldn't fetch weather data for "${locationCity}". Please check the location name and try again.`
+        `I couldn't fetch weather data for "${locationQuery}". Please check the location name and try again.`
       );
       return;
     }
@@ -266,8 +229,8 @@ async function handleWeatherDeferred(
     // Build location data object for LLM
     const locationForLLM = {
       city: weatherData.location.name,
-      regionName: locationRegion || weatherData.location.region,
-      country: locationCountry || weatherData.location.country,
+      regionName: weatherData.location.region,
+      country: weatherData.location.country,
     };
 
     // Summarize weather with LLM
@@ -575,14 +538,6 @@ async function callOpenRouter(
 
   if (!res.ok) throw new Error(`OpenRouter API returned ${res.status}`);
   return res.json();
-}
-
-// ---- IP Geolocation ----
-async function getLocationFromIP(ipAddress: string): Promise<any> {
-  const res = await fetch(`http://ip-api.com/json/${ipAddress}?fields=57855`);
-  if (!res.ok) throw new Error(`IP API returned ${res.status}`);
-  const data: any = await res.json();
-  return data.status === "success" ? data : null;
 }
 
 // ---- Weather API ----
