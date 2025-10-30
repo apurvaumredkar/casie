@@ -34,7 +34,7 @@ const commands = [
     ],
   },
   {
-    name: 'play',
+    name: 'resume',
     description: 'Resume or start playback on your Spotify',
     dm_permission: false,
   },
@@ -62,6 +62,19 @@ const commands = [
     name: 'playlists',
     description: 'View your Spotify playlists',
     dm_permission: false,
+  },
+  {
+    name: 'play',
+    description: 'Search Spotify for tracks and play them',
+    dm_permission: false,
+    options: [
+      {
+        name: 'query',
+        description: 'Track name, artist, or search query',
+        type: 3, // STRING type
+        required: true,
+      },
+    ],
   },
 ];
 

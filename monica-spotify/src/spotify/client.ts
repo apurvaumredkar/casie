@@ -83,12 +83,30 @@ export class SpotifyClient {
       );
     }
 
-    // Some endpoints return 204 No Content
+    // Some endpoints return 204 No Content or empty responses
     if (response.status === 204) {
       return null as T;
     }
 
-    return response.json();
+    // Check if response explicitly has zero content
+    const contentLength = response.headers.get('content-length');
+    if (contentLength === '0') {
+      return null as T;
+    }
+
+    // Try to parse JSON, but handle empty responses gracefully
+    const text = await response.text();
+    if (!text || text.trim().length === 0) {
+      return null as T;
+    }
+
+    try {
+      return JSON.parse(text);
+    } catch (error) {
+      console.error('Failed to parse Spotify API response:', error);
+      console.error('Response text was:', text);
+      return null as T;
+    }
   }
 
   /**
@@ -222,6 +240,27 @@ export class SpotifyClient {
       method: 'POST',
       body: JSON.stringify({ uris: trackUris }),
     });
+  }
+
+  /**
+   * Get tracks from a playlist
+   */
+  async getPlaylistTracks(playlistId: string, limit = 50): Promise<any> {
+    return this.request(`/playlists/${playlistId}/tracks?limit=${limit}`);
+  }
+
+  /**
+   * Get albums by an artist
+   */
+  async getArtistAlbums(artistId: string, limit = 50): Promise<any> {
+    return this.request(`/artists/${artistId}/albums?limit=${limit}&include_groups=album,single`);
+  }
+
+  /**
+   * Get tracks from an album
+   */
+  async getAlbumTracks(albumId: string): Promise<any> {
+    return this.request(`/albums/${albumId}/tracks`);
   }
 
   /**

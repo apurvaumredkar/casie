@@ -16,20 +16,21 @@ import {
   messageResponse,
   deferredResponse,
   editOriginalMessage,
+  updateMessageResponse,
   InteractionType,
   DiscordInteraction,
 } from './utils/discord';
 import { handleLinkSpotify } from './commands/link';
-import { handlePlay } from './commands/play';
+import { handlePlay as handleResume } from './commands/play';
 import { handlePause } from './commands/pause';
 import { handleNext } from './commands/next';
 import { handlePrevious } from './commands/previous';
 import { handleNowPlaying } from './commands/nowplaying';
 import { handlePlaylists } from './commands/playlists';
+import { handleSpotifySearch as handlePlay } from './commands/search';
 import { exchangeCodeForTokens, verifySignedState } from './spotify/oauth';
 import { storeUserTokens, getUserTokens, isUserLinked } from './utils/storage';
-import { interpretQuery } from './llm/interpreter';
-import { executeIntent } from './utils/mapper';
+import { executeAgenticQuery } from './llm/agent';
 import { SpotifyClient } from './spotify/client';
 import { isTokenExpired, refreshAccessToken } from './spotify/oauth';
 import { checkRateLimit, recordRequest, formatCooldown } from './utils/ratelimit';
@@ -112,6 +113,9 @@ async function handleDiscordInteraction(
         case 'play':
           return await handlePlay(interaction, env);
 
+        case 'resume':
+          return await handleResume(interaction, env);
+
         case 'pause':
           return await handlePause(interaction, env);
 
@@ -143,6 +147,11 @@ async function handleDiscordInteraction(
         true
       );
     }
+  }
+
+  // Handle button interactions (MESSAGE_COMPONENT)
+  if (interaction.type === InteractionType.MESSAGE_COMPONENT) {
+    return await handleButtonInteraction(interaction, env);
   }
 
   return new Response('Unknown interaction type', { status: 400 });
@@ -227,26 +236,18 @@ async function handleSpotifyNL(
           }
         }
 
-        // Interpret query with LLM
-        const intent = await interpretQuery(query, env);
-
-        if (intent.intent === 'unknown') {
-          await editOriginalMessage(
-            interaction.token,
-            `❌ Couldn't understand "${query}". Try a direct command like \`/play\`, \`/pause\`, or \`/next\`.`,
-            interaction.application_id || env.DISCORD_BOT_TOKEN.split('.')[0]
-          );
-          return;
-        }
-
-        // Execute intent with Spotify API
+        // Execute query with agentic loop
         const client = new SpotifyClient(tokens.access_token);
-        const result = await executeIntent(intent, client);
+        const agentResult = await executeAgenticQuery(query, client, env, {
+          maxIterations: 3,
+          enableRetry: true,
+          enableContext: false, // Context not implemented yet
+        });
 
         // Send result to Discord
         await editOriginalMessage(
           interaction.token,
-          result.message,
+          agentResult.message,
           interaction.application_id || env.DISCORD_BOT_TOKEN.split('.')[0]
         );
       } catch (error) {
@@ -261,6 +262,84 @@ async function handleSpotifyNL(
   );
 
   return deferredResp;
+}
+
+/**
+ * Handle button interactions (Play/Cancel buttons from spotify-search)
+ */
+async function handleButtonInteraction(
+  interaction: DiscordInteraction,
+  env: Env
+): Promise<Response> {
+  const userId = interaction.member?.user?.id || interaction.user?.id;
+  const customId = (interaction as any).data?.custom_id;
+
+  if (!userId || !customId) {
+    return updateMessageResponse('❌ Invalid interaction.');
+  }
+
+  // Handle cancel button
+  if (customId === 'cancel_search') {
+    return updateMessageResponse('❌ Search cancelled.');
+  }
+
+  // Handle play button
+  if (customId.startsWith('play_track_')) {
+    const trackUri = customId.replace('play_track_', '');
+
+    // Check if user is linked
+    if (!(await isUserLinked(env.SPOTIFY_TOKENS, userId))) {
+      return updateMessageResponse(
+        '❌ You need to link your Spotify account first! Use `/linkspotify`.'
+      );
+    }
+
+    let tokens = await getUserTokens(env.SPOTIFY_TOKENS, userId);
+
+    if (!tokens) {
+      return updateMessageResponse(
+        '❌ Your session has expired. Please relink with `/linkspotify`.'
+      );
+    }
+
+    // Refresh token if expired
+    if (isTokenExpired(tokens)) {
+      try {
+        tokens = await refreshAccessToken(
+          tokens.refresh_token,
+          env.SPOTIFY_CLIENT_ID,
+          env.SPOTIFY_CLIENT_SECRET
+        );
+        await storeUserTokens(env.SPOTIFY_TOKENS, userId, tokens);
+      } catch (error) {
+        return updateMessageResponse(
+          '❌ Failed to refresh your Spotify token. Please relink with `/linkspotify`.'
+        );
+      }
+    }
+
+    const client = new SpotifyClient(tokens.access_token);
+
+    try {
+      // Play the track
+      await (client as any).request('/me/player/play', {
+        method: 'PUT',
+        body: JSON.stringify({ uris: [trackUri] }),
+      });
+
+      return updateMessageResponse('▶️ Now playing! Check your Spotify device.');
+    } catch (error: any) {
+      if (error?.status === 404) {
+        return updateMessageResponse(
+          '❌ No active Spotify device found. Open Spotify on any device and try again.'
+        );
+      }
+      console.error('Button play error:', error);
+      return updateMessageResponse('❌ Failed to play track. Please try again.');
+    }
+  }
+
+  return updateMessageResponse('❌ Unknown button action.');
 }
 
 /**

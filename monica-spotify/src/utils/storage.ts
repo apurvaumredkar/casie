@@ -93,3 +93,49 @@ export async function isUserLinked(kv: KVNamespace, userId: string): Promise<boo
   const data = await kv.get(`user:${userId}`);
   return data !== null;
 }
+
+// ========== Conversation Context Storage ==========
+
+export interface ConversationContext {
+  userId: string;
+  lastQuery: string;
+  lastIntent: string;
+  lastResult: string;
+  timestamp: number;
+}
+
+/**
+ * Store conversation context for multi-turn queries
+ * Context expires after 5 minutes
+ */
+export async function storeConversationContext(
+  kv: KVNamespace,
+  userId: string,
+  context: ConversationContext
+): Promise<void> {
+  const expirationTtl = 5 * 60; // 5 minutes in seconds
+  await kv.put(`context:${userId}`, JSON.stringify(context), { expirationTtl });
+}
+
+/**
+ * Retrieve conversation context for follow-up queries
+ */
+export async function getConversationContext(
+  kv: KVNamespace,
+  userId: string
+): Promise<ConversationContext | null> {
+  const data = await kv.get(`context:${userId}`, 'text');
+  if (!data) return null;
+  try {
+    return JSON.parse(data) as ConversationContext;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Clear conversation context (logout or reset)
+ */
+export async function clearConversationContext(kv: KVNamespace, userId: string): Promise<void> {
+  await kv.delete(`context:${userId}`);
+}

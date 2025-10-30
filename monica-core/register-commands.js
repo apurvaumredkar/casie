@@ -29,8 +29,8 @@ const commands = [
     ],
   },
   {
-    name: 'search',
-    description: 'Search the web with AI summarization',
+    name: 'web-search',
+    description: 'Search the web with AI summarization (powered by Brave + LLM)',
     dm_permission: false,
     options: [
       {

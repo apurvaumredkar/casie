@@ -172,3 +172,34 @@ export async function editOriginalMessage(
     body: JSON.stringify({ content }),
   });
 }
+
+/**
+ * Create a message response with interactive components (buttons)
+ */
+export function messageResponseWithComponents(
+  content: string,
+  components: any[],
+  ephemeral = false
+): Response {
+  return jsonResponse({
+    type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
+    data: {
+      content,
+      components,
+      flags: ephemeral ? 64 : 0,
+    },
+  });
+}
+
+/**
+ * Create an update message response (for button interactions)
+ */
+export function updateMessageResponse(content: string, components: any[] = []): Response {
+  return jsonResponse({
+    type: InteractionResponseType.UPDATE_MESSAGE,
+    data: {
+      content,
+      components,
+    },
+  });
+}

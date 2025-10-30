@@ -112,7 +112,7 @@ export default {
           // Defer response and process in background
           ctx.waitUntil(handleAskDeferred(interaction, env));
           return json({ type: DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE });
-        case "search":
+        case "web-search":
           // Defer response and process in background
           ctx.waitUntil(handleSearchDeferred(interaction, env));
           return json({ type: DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE });
