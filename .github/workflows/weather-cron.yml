@@ -1,0 +1,30 @@
+name: Daily Weather Updates
+
+on:
+  schedule:
+    # Runs at 7 AM Eastern Time (12 PM UTC) on weekdays
+    - cron: '0 12 * * 1-5'
+  workflow_dispatch: # Allows manual triggering from Actions tab
+
+jobs:
+  send-weather-update:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger Weather Update
+        run: |
+          response=$(curl -s -w "\n%{http_code}" -X GET \
+            "https://monica-core.apoorv-umredkar.workers.dev/cron/weather" \
+            -H "Authorization: Bearer ${{ secrets.WEATHER_CRON_SECRET }}")
+
+          http_code=$(echo "$response" | tail -n1)
+          body=$(echo "$response" | sed '$d')
+
+          echo "HTTP Status: $http_code"
+          echo "Response: $body"
+
+          if [ "$http_code" != "200" ]; then
+            echo "Error: Weather update failed with status $http_code"
+            exit 1
+          fi
+
+          echo "✅ Weather update sent successfully!"

@@ -41,6 +41,24 @@ const commands = [
       },
     ],
   },
+  {
+    name: 'weather',
+    description: 'Get current weather information',
+    dm_permission: false,
+    options: [
+      {
+        name: 'location',
+        description: 'City name (e.g., Buffalo, New York, Tokyo)',
+        type: 3, // STRING type
+        required: false,
+      },
+    ],
+  },
+  {
+    name: 'clear',
+    description: 'Clear all messages in the channel',
+    dm_permission: false,
+  },
 ];
 
 async function registerCommands() {
