@@ -21,23 +21,34 @@ CASIE is a **dual-bot platform** that demonstrates best practices for building D
 
 ### Core Bot - AI Assistant
 
-A general-purpose AI assistant for conversations and web research.
+A general-purpose AI assistant for conversations, web research, and weather updates.
 
 **Commands:**
-- `/ask` - Chat with an AI assistant powered by large language models
-- `/web-search` - Search the web and get AI-summarized results
+
+*AI Chat & Search:*
+- `/ask <query>` - Chat with an AI assistant powered by large language models
+- `/web-search <query>` - Search the web and get AI-summarized results
+
+*Weather:*
+- `/weather [location]` - Get current weather information
+  - Optional location parameter (defaults to your configured location)
+  - Examples: "Buffalo", "New York", "Tokyo"
+
+*Utility:*
+- `/clear` - Clear all messages in the channel (requires manage messages permission)
 
 **Features:**
 - Natural language conversations with context awareness
-- Web search powered by Brave Search API
-- Intelligent result summarization
+- Web search powered by Brave Search API with intelligent summarization
+- Real-time weather updates with conversational AI summaries
+- Automated daily weather updates via GitHub Actions CRON
 - Private responses (only visible to you)
 
 **Use Cases:**
-- Quick information lookup
-- Research assistance
-- General Q&A
-- Learning and education
+- Quick information lookup and research
+- Daily weather briefings
+- General Q&A and learning
+- Channel maintenance and cleanup
 
 ---
 
