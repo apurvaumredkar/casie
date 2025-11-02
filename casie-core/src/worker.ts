@@ -161,6 +161,10 @@ export default {
           // Defer response and process in background
           ctx.waitUntil(handleFilesDeferred(interaction, env));
           return json({ type: DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE });
+        case "open":
+          // Defer response and process in background
+          ctx.waitUntil(handleOpenDeferred(interaction, env));
+          return json({ type: DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE });
         default:
           return json({
             type: CHANNEL_MESSAGE_WITH_SOURCE,
@@ -1069,6 +1073,61 @@ Please answer the user's query based on the library data above.`;
   );
 
   return response || "I couldn't process your query. Please try again.";
+}
+
+// ========== OPEN COMMAND HANDLER ==========
+
+async function handleOpenDeferred(
+  interaction: DiscordInteraction,
+  env: Env
+): Promise<void> {
+  try {
+    // For now, we ignore the path parameter and use hardcoded path
+    // const filePath = interaction.data?.options?.[0]?.value?.trim();
+
+    // Hardcoded path for baseline implementation
+    const filePath = "C:\\Users\\apoor\\Pictures\\cool_bugs.jpg";
+
+    // Fetch tunnel URL from KV
+    const tunnelUrl = await env.CASIE_BRIDGE_KV.get("current_tunnel_url");
+    if (!tunnelUrl) {
+      await sendFollowup(
+        interaction,
+        "📁 CASIE Bridge is not running. Please start the local server and tunnel."
+      );
+      return;
+    }
+
+    // Call the CASIE Bridge /open endpoint
+    const openResponse = await fetch(`${tunnelUrl}/open`, {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${env.CASIE_BRIDGE_API_TOKEN}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ path: filePath }),
+    });
+
+    if (!openResponse.ok) {
+      const errorData = await openResponse.json().catch(() => ({}));
+      await sendFollowup(
+        interaction,
+        `❌ Failed to open file: ${errorData.detail || openResponse.statusText}`
+      );
+      return;
+    }
+
+    const result = await openResponse.json();
+    await sendFollowup(
+      interaction,
+      `✅ Opened file: \`${result.path}\``
+    );
+  } catch (err: any) {
+    await sendFollowup(
+      interaction,
+      `❌ Error opening file: ${err.message}`
+    );
+  }
 }
 
 // ========== MEDIA COMMAND HANDLER ==========

@@ -91,6 +91,19 @@ const commands = [
       },
     ],
   },
+  {
+    name: 'open',
+    description: 'Open a file from your local machine',
+    dm_permission: false,
+    options: [
+      {
+        name: 'path',
+        description: 'File path to open (optional for now)',
+        type: 3, // STRING type
+        required: false,
+      },
+    ],
+  },
 ];
 
 async function registerCommands() {

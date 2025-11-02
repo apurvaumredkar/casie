@@ -31,7 +31,10 @@
       "Bash(npx wrangler:*)",
       "Bash(git checkout:*)",
       "Bash(npm run cf-typegen:*)",
-      "Bash(node:*)"
+      "Bash(node:*)",
+      "Bash(gh secret set:*)",
+      "Bash(gh secret:*)",
+      "Bash(npm install)"
     ],
     "deny": [],
     "ask": []

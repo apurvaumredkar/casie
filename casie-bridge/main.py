@@ -6,10 +6,12 @@ This server runs locally and is exposed via Cloudflare Tunnel.
 
 import os
 import json
+import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 from fastapi import FastAPI, HTTPException, Security, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from pydantic import BaseModel
 import httpx
 
 # Load environment variables
@@ -189,4 +191,41 @@ async def location(token: str = Security(verify_token)):
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error retrieving location: {str(e)}"
+        )
+
+
+# Request model for /open endpoint
+class OpenFileRequest(BaseModel):
+    path: str
+
+
+@app.post("/open")
+def open_file(request: OpenFileRequest, token: str = Security(verify_token)):
+    """
+    Open a file using the default Windows application.
+    Uses 'start' command on Windows to open files with their associated programs.
+    """
+    file_path = request.path
+
+    # Validate that the path exists
+    if not os.path.exists(file_path):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"File not found: {file_path}"
+        )
+
+    try:
+        # Use Windows 'start' command to open the file with default application
+        # shell=True is required for 'start' command on Windows
+        subprocess.Popen(["cmd", "/c", "start", "", file_path], shell=False)
+
+        return {
+            "ok": True,
+            "path": file_path,
+            "message": "File opened successfully"
+        }
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to open file: {str(e)}"
         )
