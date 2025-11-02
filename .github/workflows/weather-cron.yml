@@ -2,18 +2,26 @@ name: Daily Weather Updates
 
 on:
   schedule:
-    # Runs at 7 AM Eastern Daylight Time (11 AM UTC) on weekdays
-    # Note: Adjust to '0 12 * * 1-5' after November 3 when EST starts
-    - cron: '0 11 * * 1-5'
+    # Runs daily at 7 AM in your current timezone (fetched from CASIE Bridge)
+    # Currently configured for Eastern Time - adjust UTC hour as needed when traveling
+    - cron: '0 12 * * *' # 7 AM EST (12 UTC = 7 AM EST, valid Nov-Mar)
+    # Note: Change to '0 11 * * *' for EDT (11 UTC = 7 AM EDT, valid Mar-Nov)
   workflow_dispatch: # Allows manual triggering from Actions tab
 
 jobs:
   send-weather-update:
     runs-on: ubuntu-latest
     steps:
-      - name: Trigger Weather Update
+      - name: Send Weather Update
         run: |
-          # Update this URL to match your deployed worker URL
+          echo "Sending daily weather update..."
+          echo "UTC Time: $(date -u '+%Y-%m-%d %H:%M:%S %Z')"
+
+          # The worker's /cron/weather endpoint:
+          # 1. Fetches your current location from CASIE Bridge
+          # 2. Gets weather for that location
+          # 3. Sends to Discord with dynamic timestamp (shows in YOUR timezone)
+
           response=$(curl -s -w "\n%{http_code}" -X GET \
             "https://casie-core.apoorv-umredkar.workers.dev/cron/weather" \
             -H "Authorization: Bearer ${{ secrets.WEATHER_CRON_SECRET }}")
@@ -22,11 +30,13 @@ jobs:
           body=$(echo "$response" | sed '$d')
 
           echo "HTTP Status: $http_code"
-          echo "Response: $body"
+          echo "Response Body: $body"
 
           if [ "$http_code" != "200" ]; then
-            echo "Error: Weather update failed with status $http_code"
+            echo "❌ Weather update failed with status $http_code"
             exit 1
           fi
 
           echo "✅ Weather update sent successfully!"
+          echo "📍 Location detected from CASIE Bridge"
+          echo "🕐 Discord timestamp shows in your local timezone automatically"
