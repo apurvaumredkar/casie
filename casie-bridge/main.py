@@ -131,7 +131,7 @@ async def location(token: str = Security(verify_token)):
     try:
         async with httpx.AsyncClient() as client:
             response = await client.get(
-                "http://ip-api.com/json/?fields=49657",
+                "http://ip-api.com/json/?fields=status,country,regionName,city,zip,lat,lon,timezone,offset",
                 timeout=10.0
             )
             response.raise_for_status()
