@@ -36,6 +36,7 @@ const SYSTEM_PROMPT = `
 // ========== CONSTANTS ==========
 const PING = 1;
 const APPLICATION_COMMAND = 2;
+const MESSAGE_COMPONENT = 3;
 const CHANNEL_MESSAGE_WITH_SOURCE = 4;
 const DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE = 5;
 
@@ -89,7 +90,10 @@ interface DiscordInteraction {
 
 interface DiscordResponse {
   type: number;
-  data?: { content: string };
+  data?: {
+    content: string;
+    components?: any[]; // Discord message components (buttons, etc.)
+  };
   flags?: number; // Message flags (e.g., 64 for ephemeral)
 }
 
@@ -165,11 +169,72 @@ export default {
           // Defer response and process in background
           ctx.waitUntil(handleOpenDeferred(interaction, env));
           return json({ type: DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE });
+        case "pc-lock":
+          // Show confirmation prompt (no deferral needed - immediate response)
+          return handlePCLockCommand(interaction, env);
+        case "pc-restart":
+          // Show confirmation prompt (no deferral needed - immediate response)
+          return handlePCRestartCommand(interaction, env);
+        case "pc-shutdown":
+          // Show confirmation prompt (no deferral needed - immediate response)
+          return handlePCShutdownCommand(interaction, env);
+        case "pc-sleep":
+          // Show confirmation prompt (no deferral needed - immediate response)
+          return handlePCSleepCommand(interaction, env);
         default:
           return json({
             type: CHANNEL_MESSAGE_WITH_SOURCE,
             data: { content: `Unknown command: ${cmd}` },
           });
+      }
+    }
+
+    // Button interactions (message components)
+    if (interaction.type === MESSAGE_COMPONENT) {
+      const customId = (interaction as any).data?.custom_id;
+
+      // PC Lock buttons
+      if (customId === "pc_lock_confirm") {
+        ctx.waitUntil(handlePCLockConfirmed(interaction, env));
+        return json({ type: DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE });
+      } else if (customId === "pc_lock_cancel") {
+        return json({
+          type: CHANNEL_MESSAGE_WITH_SOURCE,
+          data: { content: "❌ PC lock cancelled." }
+        });
+      }
+
+      // PC Restart buttons
+      else if (customId === "pc_restart_confirm") {
+        ctx.waitUntil(handlePCRestartConfirmed(interaction, env));
+        return json({ type: DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE });
+      } else if (customId === "pc_restart_cancel") {
+        return json({
+          type: CHANNEL_MESSAGE_WITH_SOURCE,
+          data: { content: "❌ PC restart cancelled." }
+        });
+      }
+
+      // PC Shutdown buttons
+      else if (customId === "pc_shutdown_confirm") {
+        ctx.waitUntil(handlePCShutdownConfirmed(interaction, env));
+        return json({ type: DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE });
+      } else if (customId === "pc_shutdown_cancel") {
+        return json({
+          type: CHANNEL_MESSAGE_WITH_SOURCE,
+          data: { content: "❌ PC shutdown cancelled." }
+        });
+      }
+
+      // PC Sleep buttons
+      else if (customId === "pc_sleep_confirm") {
+        ctx.waitUntil(handlePCSleepConfirmed(interaction, env));
+        return json({ type: DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE });
+      } else if (customId === "pc_sleep_cancel") {
+        return json({
+          type: CHANNEL_MESSAGE_WITH_SOURCE,
+          data: { content: "❌ PC sleep cancelled." }
+        });
       }
     }
 
@@ -1082,11 +1147,16 @@ async function handleOpenDeferred(
   env: Env
 ): Promise<void> {
   try {
-    // For now, we ignore the path parameter and use hardcoded path
-    // const filePath = interaction.data?.options?.[0]?.value?.trim();
+    // Get user query (natural language search for episode)
+    const userQuery = interaction.data?.options?.[0]?.value?.trim();
 
-    // Hardcoded path for baseline implementation
-    const filePath = "C:\\Users\\apoor\\Pictures\\cool_bugs.jpg";
+    if (!userQuery) {
+      await sendFollowup(
+        interaction,
+        "❌ Please provide a search query (e.g., \"Brooklyn Nine Nine season 1 episode 1\")"
+      );
+      return;
+    }
 
     // Fetch tunnel URL from KV
     const tunnelUrl = await env.CASIE_BRIDGE_KV.get("current_tunnel_url");
@@ -1097,6 +1167,39 @@ async function handleOpenDeferred(
       );
       return;
     }
+
+    // Query the semantic search endpoint
+    const queryResponse = await fetch(`${tunnelUrl}/query-videos`, {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${env.CASIE_BRIDGE_API_TOKEN}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ query: userQuery, limit: 1 }),
+    });
+
+    if (!queryResponse.ok) {
+      const errorData = await queryResponse.json().catch(() => ({}));
+      await sendFollowup(
+        interaction,
+        `❌ Failed to search episodes: ${errorData.detail || queryResponse.statusText}`
+      );
+      return;
+    }
+
+    const queryResult = await queryResponse.json();
+
+    if (!queryResult.ok || queryResult.count === 0) {
+      await sendFollowup(
+        interaction,
+        `❌ No episodes found for query: "${userQuery}"`
+      );
+      return;
+    }
+
+    // Get the first (best match) result
+    const bestMatch = queryResult.results[0];
+    const filePath = bestMatch.filepath;
 
     // Call the CASIE Bridge /open endpoint
     const openResponse = await fetch(`${tunnelUrl}/open`, {
@@ -1117,15 +1220,348 @@ async function handleOpenDeferred(
       return;
     }
 
-    const result = await openResponse.json();
+    // Format the match info nicely
+    const matchInfo = `**${bestMatch.series}** S${String(bestMatch.season).padStart(2, '0')}E${String(bestMatch.episode).padStart(2, '0')}`;
+    const scorePercent = Math.round(bestMatch.score * 100);
+
     await sendFollowup(
       interaction,
-      `✅ Opened file: \`${result.path}\``
+      `✅ Opening: ${matchInfo}\n🎯 Match confidence: ${scorePercent}%`
     );
   } catch (err: any) {
     await sendFollowup(
       interaction,
       `❌ Error opening file: ${err.message}`
+    );
+  }
+}
+
+// ========== PC COMMAND HANDLERS ==========
+
+function handlePCLockCommand(
+  interaction: DiscordInteraction,
+  env: Env
+): Response {
+  const userId = interaction.member?.user?.id || interaction.user?.id;
+  if (userId !== env.YOUR_DISCORD_ID) {
+    return json({
+      type: CHANNEL_MESSAGE_WITH_SOURCE,
+      data: { content: "🔒 You are not authorized to use this command." }
+    });
+  }
+
+  return json({
+    type: CHANNEL_MESSAGE_WITH_SOURCE,
+    data: {
+      content: "🔒 Are you sure you want to lock your PC?",
+      components: [
+        {
+          type: 1,
+          components: [
+            {
+              type: 2,
+              style: 4,
+              label: "Yes, Lock PC",
+              custom_id: "pc_lock_confirm"
+            },
+            {
+              type: 2,
+              style: 2,
+              label: "Cancel",
+              custom_id: "pc_lock_cancel"
+            }
+          ]
+        }
+      ]
+    }
+  });
+}
+
+async function handlePCLockConfirmed(
+  interaction: DiscordInteraction,
+  env: Env
+): Promise<void> {
+  try {
+    const tunnelUrl = await env.CASIE_BRIDGE_KV.get("current_tunnel_url");
+    if (!tunnelUrl) {
+      await sendFollowup(
+        interaction,
+        "🔌 CASIE Bridge is not running. Please start the local server and tunnel."
+      );
+      return;
+    }
+
+    const lockResponse = await fetch(`${tunnelUrl}/lock`, {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${env.CASIE_BRIDGE_API_TOKEN}`,
+        "Content-Type": "application/json",
+      },
+    });
+
+    if (!lockResponse.ok) {
+      const errorData = await lockResponse.json().catch(() => ({}));
+      await sendFollowup(
+        interaction,
+        `❌ Failed to lock PC: ${errorData.detail || lockResponse.statusText}`
+      );
+      return;
+    }
+
+    await sendFollowup(
+      interaction,
+      "🔒 PC locked successfully!"
+    );
+  } catch (err: any) {
+    await sendFollowup(
+      interaction,
+      `❌ Error locking PC: ${err.message}`
+    );
+  }
+}
+
+function handlePCRestartCommand(
+  interaction: DiscordInteraction,
+  env: Env
+): Response {
+  const userId = interaction.member?.user?.id || interaction.user?.id;
+  if (userId !== env.YOUR_DISCORD_ID) {
+    return json({
+      type: CHANNEL_MESSAGE_WITH_SOURCE,
+      data: { content: "🔒 You are not authorized to use this command." }
+    });
+  }
+
+  return json({
+    type: CHANNEL_MESSAGE_WITH_SOURCE,
+    data: {
+      content: "🔄 Are you sure you want to RESTART your PC? All unsaved work will be lost!",
+      components: [
+        {
+          type: 1,
+          components: [
+            {
+              type: 2,
+              style: 4,
+              label: "Yes, Restart PC",
+              custom_id: "pc_restart_confirm"
+            },
+            {
+              type: 2,
+              style: 2,
+              label: "Cancel",
+              custom_id: "pc_restart_cancel"
+            }
+          ]
+        }
+      ]
+    }
+  });
+}
+
+async function handlePCRestartConfirmed(
+  interaction: DiscordInteraction,
+  env: Env
+): Promise<void> {
+  try {
+    const tunnelUrl = await env.CASIE_BRIDGE_KV.get("current_tunnel_url");
+    if (!tunnelUrl) {
+      await sendFollowup(
+        interaction,
+        "🔌 CASIE Bridge is not running. Please start the local server and tunnel."
+      );
+      return;
+    }
+
+    const restartResponse = await fetch(`${tunnelUrl}/restart`, {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${env.CASIE_BRIDGE_API_TOKEN}`,
+        "Content-Type": "application/json",
+      },
+    });
+
+    if (!restartResponse.ok) {
+      const errorData = await restartResponse.json().catch(() => ({}));
+      await sendFollowup(
+        interaction,
+        `❌ Failed to restart PC: ${errorData.detail || restartResponse.statusText}`
+      );
+      return;
+    }
+
+    await sendFollowup(
+      interaction,
+      "🔄 PC restart initiated! See you in a moment..."
+    );
+  } catch (err: any) {
+    await sendFollowup(
+      interaction,
+      `❌ Error restarting PC: ${err.message}`
+    );
+  }
+}
+
+function handlePCShutdownCommand(
+  interaction: DiscordInteraction,
+  env: Env
+): Response {
+  const userId = interaction.member?.user?.id || interaction.user?.id;
+  if (userId !== env.YOUR_DISCORD_ID) {
+    return json({
+      type: CHANNEL_MESSAGE_WITH_SOURCE,
+      data: { content: "🔒 You are not authorized to use this command." }
+    });
+  }
+
+  return json({
+    type: CHANNEL_MESSAGE_WITH_SOURCE,
+    data: {
+      content: "⚠️ Are you sure you want to SHUTDOWN your PC? All unsaved work will be lost!",
+      components: [
+        {
+          type: 1,
+          components: [
+            {
+              type: 2,
+              style: 4,
+              label: "Yes, Shutdown PC",
+              custom_id: "pc_shutdown_confirm"
+            },
+            {
+              type: 2,
+              style: 2,
+              label: "Cancel",
+              custom_id: "pc_shutdown_cancel"
+            }
+          ]
+        }
+      ]
+    }
+  });
+}
+
+async function handlePCShutdownConfirmed(
+  interaction: DiscordInteraction,
+  env: Env
+): Promise<void> {
+  try {
+    const tunnelUrl = await env.CASIE_BRIDGE_KV.get("current_tunnel_url");
+    if (!tunnelUrl) {
+      await sendFollowup(
+        interaction,
+        "🔌 CASIE Bridge is not running. Please start the local server and tunnel."
+      );
+      return;
+    }
+
+    const shutdownResponse = await fetch(`${tunnelUrl}/shutdown`, {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${env.CASIE_BRIDGE_API_TOKEN}`,
+        "Content-Type": "application/json",
+      },
+    });
+
+    if (!shutdownResponse.ok) {
+      const errorData = await shutdownResponse.json().catch(() => ({}));
+      await sendFollowup(
+        interaction,
+        `❌ Failed to shutdown PC: ${errorData.detail || shutdownResponse.statusText}`
+      );
+      return;
+    }
+
+    await sendFollowup(
+      interaction,
+      "⚡ PC shutdown initiated! Goodbye..."
+    );
+  } catch (err: any) {
+    await sendFollowup(
+      interaction,
+      `❌ Error shutting down PC: ${err.message}`
+    );
+  }
+}
+
+function handlePCSleepCommand(
+  interaction: DiscordInteraction,
+  env: Env
+): Response {
+  const userId = interaction.member?.user?.id || interaction.user?.id;
+  if (userId !== env.YOUR_DISCORD_ID) {
+    return json({
+      type: CHANNEL_MESSAGE_WITH_SOURCE,
+      data: { content: "🔒 You are not authorized to use this command." }
+    });
+  }
+
+  return json({
+    type: CHANNEL_MESSAGE_WITH_SOURCE,
+    data: {
+      content: "💤 Are you sure you want to put your PC to sleep?",
+      components: [
+        {
+          type: 1,
+          components: [
+            {
+              type: 2,
+              style: 1,
+              label: "Yes, Sleep PC",
+              custom_id: "pc_sleep_confirm"
+            },
+            {
+              type: 2,
+              style: 2,
+              label: "Cancel",
+              custom_id: "pc_sleep_cancel"
+            }
+          ]
+        }
+      ]
+    }
+  });
+}
+
+async function handlePCSleepConfirmed(
+  interaction: DiscordInteraction,
+  env: Env
+): Promise<void> {
+  try {
+    const tunnelUrl = await env.CASIE_BRIDGE_KV.get("current_tunnel_url");
+    if (!tunnelUrl) {
+      await sendFollowup(
+        interaction,
+        "🔌 CASIE Bridge is not running. Please start the local server and tunnel."
+      );
+      return;
+    }
+
+    const sleepResponse = await fetch(`${tunnelUrl}/sleep`, {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${env.CASIE_BRIDGE_API_TOKEN}`,
+        "Content-Type": "application/json",
+      },
+    });
+
+    if (!sleepResponse.ok) {
+      const errorData = await sleepResponse.json().catch(() => ({}));
+      await sendFollowup(
+        interaction,
+        `❌ Failed to put PC to sleep: ${errorData.detail || sleepResponse.statusText}`
+      );
+      return;
+    }
+
+    await sendFollowup(
+      interaction,
+      "💤 PC going to sleep... Good night!"
+    );
+  } catch (err: any) {
+    await sendFollowup(
+      interaction,
+      `❌ Error putting PC to sleep: ${err.message}`
     );
   }
 }

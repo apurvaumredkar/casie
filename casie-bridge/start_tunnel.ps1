@@ -77,6 +77,30 @@ if ($url) {
             Write-Host "Successfully uploaded tunnel URL to Cloudflare KV" -ForegroundColor Green
             Write-Host "Key: current_tunnel_url" -ForegroundColor Cyan
             Write-Host "Value: $url" -ForegroundColor Cyan
+
+            # Also upload location data to KV if location.json exists
+            $locationFile = "D:\casie\casie-bridge\location.json"
+            if (Test-Path $locationFile) {
+                Write-Host "Uploading location data to Cloudflare KV..." -ForegroundColor Cyan
+
+                # Read location.json and extract the location object
+                $locationData = Get-Content $locationFile -Raw | ConvertFrom-Json
+                $locationJson = $locationData.location | ConvertTo-Json -Compress
+
+                # Upload location data to KV
+                $locationResult = npx wrangler kv key put --namespace-id=$kvNamespace --remote "location_cache" $locationJson 2>&1
+
+                if ($LASTEXITCODE -eq 0) {
+                    Write-Host "Successfully uploaded location data to Cloudflare KV" -ForegroundColor Green
+                    Write-Host "Key: location_cache" -ForegroundColor Cyan
+                } else {
+                    Write-Host "Failed to upload location data to KV (continuing anyway)" -ForegroundColor Yellow
+                    Write-Host $locationResult -ForegroundColor Gray
+                }
+            } else {
+                Write-Host "Location cache not found, skipping location upload" -ForegroundColor Yellow
+                Write-Host "Location data will be synced on first /location API call" -ForegroundColor Gray
+            }
         } else {
             Write-Host "Failed to upload URL to Cloudflare KV" -ForegroundColor Red
             Write-Host $wranglerResult -ForegroundColor Gray

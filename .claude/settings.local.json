@@ -34,7 +34,18 @@
       "Bash(node:*)",
       "Bash(gh secret set:*)",
       "Bash(gh secret:*)",
-      "Bash(npm install)"
+      "Bash(npm install)",
+      "Bash(powershell.exe:*)",
+      "Bash(mlenv python -m pip:*)",
+      "Bash(ollama list:*)",
+      "Bash(alias:*)",
+      "Bash(source:*)",
+      "Bash(python -m pip:*)",
+      "Bash(winget uninstall:*)",
+      "Bash(docker-compose up:*)",
+      "Bash(timeout 10 bash:*)",
+      "Bash(docker exec:*)",
+      "Bash(python:*)"
     ],
     "deny": [],
     "ask": []

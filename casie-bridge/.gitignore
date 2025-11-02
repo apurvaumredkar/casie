@@ -8,6 +8,13 @@ tunnel_url.txt
 # Generated index files (personal media library)
 videos.md
 
+# Docker volumes (persistent data)
+ollama_data/
+qdrant_data/
+
+# Location cache
+location.json
+
 # Python cache
 __pycache__/
 *.pyc

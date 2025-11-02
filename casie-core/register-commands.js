@@ -93,16 +93,36 @@ const commands = [
   },
   {
     name: 'open',
-    description: 'Open a file from your local machine',
+    description: 'Search and open a TV show episode using natural language',
     dm_permission: false,
     options: [
       {
-        name: 'path',
-        description: 'File path to open (optional for now)',
+        name: 'query',
+        description: 'Search for an episode (e.g., "Brooklyn Nine Nine season 1 episode 1")',
         type: 3, // STRING type
-        required: false,
+        required: true,
       },
     ],
+  },
+  {
+    name: 'pc-lock',
+    description: 'Lock your Windows PC with confirmation (requires CASIE Bridge)',
+    dm_permission: false,
+  },
+  {
+    name: 'pc-restart',
+    description: 'Restart your Windows PC with confirmation (requires CASIE Bridge)',
+    dm_permission: false,
+  },
+  {
+    name: 'pc-shutdown',
+    description: 'Shutdown your Windows PC with confirmation (requires CASIE Bridge)',
+    dm_permission: false,
+  },
+  {
+    name: 'pc-sleep',
+    description: 'Put your Windows PC to sleep with confirmation (requires CASIE Bridge)',
+    dm_permission: false,
   },
 ];
 

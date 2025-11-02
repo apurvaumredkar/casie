@@ -14,6 +14,15 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
 import httpx
 
+# Qdrant and Ollama imports (optional dependencies)
+try:
+    from qdrant_client import QdrantClient
+    import ollama
+    QDRANT_AVAILABLE = True
+except ImportError:
+    QDRANT_AVAILABLE = False
+    print("Warning: qdrant-client or ollama not installed. Qdrant features disabled.")
+
 # Load environment variables
 env_path = Path(__file__).parent / ".env"
 if env_path.exists():
@@ -29,10 +38,44 @@ API_AUTH_TOKEN = os.getenv("API_AUTH_TOKEN")
 if not API_AUTH_TOKEN:
     raise ValueError("API_AUTH_TOKEN not set in .env file")
 
+# Cloudflare KV configuration (optional - for syncing location data)
+CLOUDFLARE_ACCOUNT_ID = os.getenv("CLOUDFLARE_ACCOUNT_ID")
+CLOUDFLARE_API_TOKEN = os.getenv("CLOUDFLARE_API_TOKEN")
+KV_NAMESPACE_ID = os.getenv("KV_NAMESPACE_ID")
+
+KV_SYNC_ENABLED = all([CLOUDFLARE_ACCOUNT_ID, CLOUDFLARE_API_TOKEN, KV_NAMESPACE_ID])
+if not KV_SYNC_ENABLED:
+    print("Warning: Cloudflare KV credentials not configured. Location sync to KV disabled.")
+
 # Security scheme
 security = HTTPBearer()
 
 app = FastAPI(title="CASIE Bridge", version="1.0.0")
+
+
+async def sync_location_to_kv(location_data: dict) -> bool:
+    """
+    Sync location data to Cloudflare KV for use by GitHub Actions weather CRON.
+    Returns True if successful, False if failed or disabled.
+    """
+    if not KV_SYNC_ENABLED:
+        return False
+
+    try:
+        url = f"https://api.cloudflare.com/client/v4/accounts/{CLOUDFLARE_ACCOUNT_ID}/storage/kv/namespaces/{KV_NAMESPACE_ID}/values/location_cache"
+        headers = {
+            "Authorization": f"Bearer {CLOUDFLARE_API_TOKEN}",
+            "Content-Type": "application/json"
+        }
+
+        async with httpx.AsyncClient() as client:
+            response = await client.put(url, json=location_data, headers=headers, timeout=10.0)
+            response.raise_for_status()
+            print(f"Successfully synced location data to Cloudflare KV")
+            return True
+    except Exception as e:
+        print(f"Failed to sync location to KV: {e}")
+        return False
 
 
 def verify_token(credentials: HTTPAuthorizationCredentials = Security(security)) -> str:
@@ -156,6 +199,9 @@ async def location(token: str = Security(verify_token)):
         with open(location_file, 'w', encoding='utf-8') as f:
             json.dump(cache_data, f, indent=2)
 
+        # Sync location data to Cloudflare KV (async, non-blocking)
+        await sync_location_to_kv(location_data)
+
         return {
             "ok": True,
             "location": location_data,
@@ -194,9 +240,14 @@ async def location(token: str = Security(verify_token)):
         )
 
 
-# Request model for /open endpoint
+# Request models
 class OpenFileRequest(BaseModel):
     path: str
+
+
+class QueryVideosRequest(BaseModel):
+    query: str
+    limit: int = 10  # Number of results to return
 
 
 @app.post("/open")
@@ -228,4 +279,181 @@ def open_file(request: OpenFileRequest, token: str = Security(verify_token)):
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to open file: {str(e)}"
+        )
+
+
+@app.post("/lock")
+def lock_pc(token: str = Security(verify_token)):
+    """
+    Lock the Windows PC (equivalent to Win+L).
+    Uses rundll32.exe to call the LockWorkStation function.
+    """
+    try:
+        # Lock the workstation using rundll32
+        # This is the programmatic equivalent of pressing Win+L
+        subprocess.Popen(
+            ["rundll32.exe", "user32.dll,LockWorkStation"],
+            shell=False
+        )
+
+        return {
+            "ok": True,
+            "message": "PC locked successfully"
+        }
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to lock PC: {str(e)}"
+        )
+
+
+@app.post("/restart")
+def restart_pc(token: str = Security(verify_token)):
+    """
+    Restart the Windows PC.
+    Uses shutdown command with restart flag.
+    """
+    try:
+        # Restart the PC with a 0 second delay
+        # /r = restart, /t 0 = timeout 0 seconds, /f = force close apps
+        subprocess.Popen(
+            ["shutdown", "/r", "/t", "0", "/f"],
+            shell=False
+        )
+
+        return {
+            "ok": True,
+            "message": "PC restart initiated"
+        }
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to restart PC: {str(e)}"
+        )
+
+
+@app.post("/shutdown")
+def shutdown_pc(token: str = Security(verify_token)):
+    """
+    Shutdown the Windows PC.
+    Uses shutdown command with shutdown flag.
+    """
+    try:
+        # Shutdown the PC with a 0 second delay
+        # /s = shutdown, /t 0 = timeout 0 seconds, /f = force close apps
+        subprocess.Popen(
+            ["shutdown", "/s", "/t", "0", "/f"],
+            shell=False
+        )
+
+        return {
+            "ok": True,
+            "message": "PC shutdown initiated"
+        }
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to shutdown PC: {str(e)}"
+        )
+
+
+@app.post("/sleep")
+def sleep_pc(token: str = Security(verify_token)):
+    """
+    Put the Windows PC to sleep.
+    Uses rundll32 to call SetSuspendState function.
+    """
+    try:
+        # Put PC to sleep using powercfg
+        # This uses the Windows power configuration command
+        subprocess.Popen(
+            ["rundll32.exe", "powrprof.dll,SetSuspendState", "0", "1", "0"],
+            shell=False
+        )
+
+        return {
+            "ok": True,
+            "message": "PC sleep initiated"
+        }
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to put PC to sleep: {str(e)}"
+        )
+
+
+@app.post("/query-videos")
+def query_videos(request: QueryVideosRequest, token: str = Security(verify_token)):
+    """
+    Semantic search over TV show episodes using Qdrant vector database.
+
+    Takes a natural language query and returns the most relevant episodes
+    using BGE-M3 embeddings for semantic matching.
+
+    Example queries:
+    - "Brooklyn Nine Nine season 1"
+    - "Friends finale"
+    - "Game of Thrones season 8"
+    """
+    if not QDRANT_AVAILABLE:
+        raise HTTPException(
+            status_code=status.HTTP_501_NOT_IMPLEMENTED,
+            detail="Qdrant/Ollama not available. Install dependencies: pip install qdrant-client ollama"
+        )
+
+    try:
+        # Initialize Qdrant client
+        client = QdrantClient(host="localhost", port=6333)
+
+        # Generate embedding for the query using BGE-M3
+        ollama_client = ollama.Client(host="http://localhost:11434")
+        response = ollama_client.embeddings(model='bge-m3', prompt=request.query)
+        query_vector = response['embedding']
+
+        if len(query_vector) != 1024:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Expected 1024-dim vector, got {len(query_vector)}"
+            )
+
+        # Search Qdrant for similar episodes
+        search_results = client.search(
+            collection_name="videos_index",
+            query_vector=query_vector,
+            limit=request.limit,
+            with_payload=True
+        )
+
+        # Format results
+        results = []
+        for hit in search_results:
+            payload = hit.payload
+            results.append({
+                "series": payload['series'],
+                "season": payload['season'],
+                "episode": payload['episode'],
+                "title": payload.get('title', ''),
+                "filepath": payload['filepath'],
+                "score": hit.score,
+                "content": payload.get('content', '')
+            })
+
+        return {
+            "ok": True,
+            "query": request.query,
+            "results": results,
+            "count": len(results)
+        }
+
+    except Exception as e:
+        # Check if it's a connection error
+        if "connection" in str(e).lower() or "refused" in str(e).lower():
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Qdrant/Ollama services not available. Ensure Docker services are running: docker-compose up -d"
+            )
+
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error querying videos: {str(e)}"
         )

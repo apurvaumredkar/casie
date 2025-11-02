@@ -16,37 +16,30 @@ jobs:
           echo "Checking if it's 7 AM in your current timezone..."
           echo "UTC Time: $(date -u '+%Y-%m-%d %H:%M:%S %Z')"
 
-          # Step 1: Get tunnel URL from Cloudflare KV
-          echo "Fetching tunnel URL from Cloudflare KV..."
-          tunnel_url=$(curl -s -X GET \
-            "https://api.cloudflare.com/client/v4/accounts/${{ secrets.CLOUDFLARE_ACCOUNT_ID }}/storage/kv/namespaces/${{ secrets.BRIDGE_KV_NAMESPACE_ID }}/values/current_tunnel_url" \
-            -H "Authorization: Bearer ${{ secrets.CLOUDFLARE_API_TOKEN }}" | tr -d '"')
+          # Step 1: Get location data with UTC offset directly from Cloudflare KV
+          echo "Fetching location data from Cloudflare KV..."
+          location_data=$(curl -s -X GET \
+            "https://api.cloudflare.com/client/v4/accounts/${{ secrets.CLOUDFLARE_ACCOUNT_ID }}/storage/kv/namespaces/${{ secrets.BRIDGE_KV_NAMESPACE_ID }}/values/location_cache" \
+            -H "Authorization: Bearer ${{ secrets.CLOUDFLARE_API_TOKEN }}")
 
-          if [ -z "$tunnel_url" ] || [ "$tunnel_url" = "null" ]; then
-            echo "❌ CASIE Bridge tunnel URL not found in KV"
+          if [ -z "$location_data" ] || [ "$location_data" = "null" ]; then
+            echo "❌ Location data not found in Cloudflare KV"
+            echo "Make sure CASIE Bridge has been started at least once to populate the cache"
             exit 1
           fi
 
-          echo "Tunnel URL: $tunnel_url"
-
-          # Step 2: Get location with UTC offset from CASIE Bridge
-          echo "Fetching location data with UTC offset..."
-          location_response=$(curl -s -X GET \
-            "$tunnel_url/location" \
-            -H "Authorization: Bearer ${{ secrets.CASIE_BRIDGE_API_TOKEN }}")
-
           # Extract offset from location data (in seconds)
-          offset_seconds=$(echo "$location_response" | jq -r '.location.offset')
+          offset_seconds=$(echo "$location_data" | jq -r '.offset')
 
           if [ -z "$offset_seconds" ] || [ "$offset_seconds" = "null" ]; then
             echo "❌ Failed to get UTC offset from location data"
-            echo "Location Response: $location_response"
+            echo "Location Data: $location_data"
             exit 1
           fi
 
           echo "UTC Offset: $offset_seconds seconds"
 
-          # Step 3: Calculate local hour
+          # Step 2: Calculate local hour
           utc_hour=$(date -u '+%H')
           offset_hours=$(echo "$offset_seconds / 3600" | bc)
           local_hour=$(( ($utc_hour + $offset_hours) % 24 ))
@@ -60,7 +53,7 @@ jobs:
           echo "Offset Hours: $offset_hours"
           echo "Local Hour: $local_hour"
 
-          # Step 4: Only send weather if it's 7 AM local time
+          # Step 3: Only send weather if it's 7 AM local time
           if [ $local_hour -ne 7 ]; then
             echo "⏰ Not 7 AM yet (current local hour: $local_hour). Skipping weather update."
             exit 0
@@ -68,7 +61,7 @@ jobs:
 
           echo "⏰ It's 7 AM! Sending weather update..."
 
-          # Step 5: Send weather update
+          # Step 4: Send weather update
           # The worker's /cron/weather endpoint:
           # 1. Fetches your current location from CASIE Bridge
           # 2. Gets weather for that location
