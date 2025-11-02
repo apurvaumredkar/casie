@@ -7,7 +7,8 @@ Write-Host "========================================" -ForegroundColor Cyan
 Write-Host ""
 
 $taskName = "CASIE Bridge"
-$scriptPath = "D:\casie\casie-bridge\start_casie.ps1"
+$scriptPath = Join-Path $PSScriptRoot "casie.ps1"
+$scriptArgs = "-Action start"
 
 # Check if task already exists
 $existingTask = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
@@ -28,7 +29,7 @@ Write-Host "Creating scheduled task '$taskName'..." -ForegroundColor Cyan
 
 # Define the action (what to run)
 $action = New-ScheduledTaskAction -Execute "powershell.exe" `
-    -Argument "-ExecutionPolicy Bypass -WindowStyle Hidden -File `"$scriptPath`""
+    -Argument "-ExecutionPolicy Bypass -WindowStyle Hidden -File `"$scriptPath`" $scriptArgs"
 
 # Define the trigger (when to run)
 $trigger = New-ScheduledTaskTrigger -AtLogOn
