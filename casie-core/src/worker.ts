@@ -239,7 +239,6 @@ async function handleWeatherDeferred(
     // Get location from parameter or fetch from CASIE Bridge
     const userProvidedLocation = interaction.data?.options?.[0]?.value?.trim();
     let locationQuery: string;
-    let userTimezone: string | undefined;
 
     if (userProvidedLocation) {
       // User specified a location
@@ -271,8 +270,6 @@ async function handleWeatherDeferred(
 
         // Use city, state format for better weather API results
         locationQuery = `${loc.city}, ${loc.regionName}`;
-        // Store timezone for timestamp formatting
-        userTimezone = loc.timezone;
       } catch (locErr: any) {
         console.error("Failed to fetch location from bridge:", locErr.message);
         // Fallback to Buffalo NY if location fetch fails
@@ -306,15 +303,13 @@ async function handleWeatherDeferred(
     );
     const weatherSummary = summary || "I couldn't summarize the weather information.";
 
-    // Get current time in user's timezone (or UTC if timezone unknown)
-    const currentTime = new Date().toLocaleString('en-US', {
-      dateStyle: 'medium',
-      timeStyle: 'short',
-      timeZone: userTimezone || 'UTC'
-    });
+    // Get current time as Unix timestamp for Discord's dynamic timestamp format
+    const unixTimestamp = Math.floor(Date.now() / 1000);
+    // Discord will automatically convert this to user's local timezone
+    const discordTimestamp = `<t:${unixTimestamp}:f>`; // f = Short Date/Time format
 
-    // Format header with location and time
-    const header = `# Weather Report - ${locationForLLM.city}, ${locationForLLM.regionName}\n**${currentTime}**\n\n`;
+    // Format header with location and Discord timestamp
+    const header = `# Weather Report - ${locationForLLM.city}, ${locationForLLM.regionName}\n**${discordTimestamp}**\n\n`;
     const reply = header + weatherSummary;
 
     await sendFollowup(interaction, reply);
@@ -471,12 +466,11 @@ async function handleCronWeather(
     }
 
     // Format weather message with header (like slash command)
-    // Get current time (not observation time from weather station)
-    const currentTime = new Date().toLocaleString('en-US', {
-      dateStyle: 'medium',
-      timeStyle: 'short'
-    });
-    const header = `# Weather Report - ${locationForLLM.city}, ${locationForLLM.regionName}\n**${currentTime}**\n\n`;
+    // Get current time as Unix timestamp for Discord's dynamic timestamp format
+    const unixTimestamp = Math.floor(Date.now() / 1000);
+    // Discord will automatically convert this to user's local timezone
+    const discordTimestamp = `<t:${unixTimestamp}:f>`; // f = Short Date/Time format
+    const header = `# Weather Report - ${locationForLLM.city}, ${locationForLLM.regionName}\n**${discordTimestamp}**\n\n`;
     const formattedMessage = header + summary;
 
     // Send to Discord channel
