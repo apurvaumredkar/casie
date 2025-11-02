@@ -5,9 +5,12 @@ This server runs locally and is exposed via Cloudflare Tunnel.
 """
 
 import os
+import json
+from datetime import datetime, timezone
 from pathlib import Path
 from fastapi import FastAPI, HTTPException, Security, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+import httpx
 
 # Load environment variables
 env_path = Path(__file__).parent / ".env"
@@ -88,4 +91,102 @@ def videos(token: str = Security(verify_token)):
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error reading videos index: {str(e)}"
+        )
+
+
+@app.get("/location")
+async def location(token: str = Security(verify_token)):
+    """
+    Get cached location data from ip-api.com.
+    Returns location data with 3-hour cache TTL.
+    Auto-refreshes cache when expired or missing.
+    """
+    location_file = Path(__file__).parent / "location.json"
+    cache_ttl_hours = 3
+
+    # Check if cache exists and is fresh
+    if location_file.exists():
+        try:
+            with open(location_file, 'r', encoding='utf-8') as f:
+                cached_data = json.load(f)
+
+            # Check cache age
+            last_updated = datetime.fromisoformat(cached_data.get("last_updated", ""))
+            age_hours = (datetime.now(timezone.utc) - last_updated).total_seconds() / 3600
+
+            if age_hours < cache_ttl_hours:
+                # Cache is fresh, return it
+                return {
+                    "ok": True,
+                    "location": cached_data.get("location"),
+                    "cached": True,
+                    "last_updated": cached_data.get("last_updated"),
+                    "age_hours": round(age_hours, 2)
+                }
+        except (json.JSONDecodeError, KeyError, ValueError):
+            # Cache is corrupted, will fetch fresh data
+            pass
+
+    # Fetch fresh location data
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                "http://ip-api.com/json/?fields=49657",
+                timeout=10.0
+            )
+            response.raise_for_status()
+            location_data = response.json()
+
+        # Check if API returned an error
+        if location_data.get("status") == "fail":
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=f"IP API error: {location_data.get('message', 'Unknown error')}"
+            )
+
+        # Save to cache
+        now = datetime.now(timezone.utc).isoformat()
+        cache_data = {
+            "location": location_data,
+            "last_updated": now
+        }
+
+        with open(location_file, 'w', encoding='utf-8') as f:
+            json.dump(cache_data, f, indent=2)
+
+        return {
+            "ok": True,
+            "location": location_data,
+            "cached": False,
+            "last_updated": now,
+            "age_hours": 0
+        }
+
+    except httpx.HTTPError as e:
+        # If fetch fails and we have stale cache, return it with warning
+        if location_file.exists():
+            try:
+                with open(location_file, 'r', encoding='utf-8') as f:
+                    cached_data = json.load(f)
+
+                return {
+                    "ok": True,
+                    "location": cached_data.get("location"),
+                    "cached": True,
+                    "stale": True,
+                    "last_updated": cached_data.get("last_updated"),
+                    "warning": "Using stale cache due to API error"
+                }
+            except:
+                pass
+
+        # No cache and API failed
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Failed to fetch location data: {str(e)}"
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error retrieving location: {str(e)}"
         )

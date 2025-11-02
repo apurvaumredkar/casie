@@ -236,9 +236,46 @@ async function handleWeatherDeferred(
   env: Env
 ): Promise<void> {
   try {
-    // Get location from parameter or default to Buffalo NY
+    // Get location from parameter or fetch from CASIE Bridge
     const userProvidedLocation = interaction.data?.options?.[0]?.value?.trim();
-    const locationQuery = userProvidedLocation || "Buffalo NY";
+    let locationQuery: string;
+
+    if (userProvidedLocation) {
+      // User specified a location
+      locationQuery = userProvidedLocation;
+    } else {
+      // Fetch user's location from CASIE Bridge
+      try {
+        const tunnelUrl = await env.CASIE_BRIDGE_KV.get("current_tunnel_url");
+        if (!tunnelUrl) {
+          await sendFollowup(
+            interaction,
+            "📍 CASIE Bridge is not running. Please specify a location or start the bridge server."
+          );
+          return;
+        }
+
+        const locationResponse = await fetch(`${tunnelUrl}/location`, {
+          headers: {
+            "Authorization": `Bearer ${env.CASIE_BRIDGE_API_TOKEN}`,
+          },
+        });
+
+        if (!locationResponse.ok) {
+          throw new Error(`Location API returned ${locationResponse.status}`);
+        }
+
+        const locationData = await locationResponse.json();
+        const loc = locationData.location;
+
+        // Use city, state format for better weather API results
+        locationQuery = `${loc.city}, ${loc.regionName}`;
+      } catch (locErr: any) {
+        console.error("Failed to fetch location from bridge:", locErr.message);
+        // Fallback to Buffalo NY if location fetch fails
+        locationQuery = "Buffalo NY";
+      }
+    }
 
     // Get weather data for the location (using wttr.in)
     const weatherData = await getWeatherData(locationQuery);
@@ -353,8 +390,29 @@ async function handleCronWeather(
       });
     }
 
-    // Get weather for Buffalo, NY (using wttr.in)
-    const weatherData = await getWeatherData("Buffalo NY");
+    // Fetch user's location from CASIE Bridge
+    let locationQuery = "Buffalo NY"; // Fallback default
+    try {
+      const tunnelUrl = await env.CASIE_BRIDGE_KV.get("current_tunnel_url");
+      if (tunnelUrl) {
+        const locationResponse = await fetch(`${tunnelUrl}/location`, {
+          headers: {
+            "Authorization": `Bearer ${env.CASIE_BRIDGE_API_TOKEN}`,
+          },
+        });
+
+        if (locationResponse.ok) {
+          const locationData = await locationResponse.json();
+          const loc = locationData.location;
+          locationQuery = `${loc.city}, ${loc.regionName}`;
+        }
+      }
+    } catch (locErr: any) {
+      console.error("CRON: Failed to fetch location from bridge, using fallback:", locErr.message);
+    }
+
+    // Get weather for the location (using wttr.in)
+    const weatherData = await getWeatherData(locationQuery);
     if (!weatherData || !weatherData.current_condition || !weatherData.nearest_area) {
       return new Response(JSON.stringify({ error: "Failed to fetch weather data" }), {
         status: 500,

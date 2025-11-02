@@ -183,3 +183,6 @@ Thumbs.db
 
 # Claude Code project instructions (local only)
 CLAUDE.md
+
+# CASIE Bridge cached data
+casie-bridge/location.json
