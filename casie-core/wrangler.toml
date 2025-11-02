@@ -7,5 +7,10 @@ account_id = "57a380cabf0851d1d6fcadc7eb01e2c1"
 [ai]
 binding = "AI"
 
+# KV namespace for CASIE Bridge tunnel URL
+[[kv_namespaces]]
+binding = "CASIE_BRIDGE_KV"
+id = "fe92484d4d2842e2a035aef260eb5aec"
+
 [observability]
 enabled = true

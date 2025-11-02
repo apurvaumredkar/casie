@@ -53,6 +53,8 @@ interface Env {
   WEATHER_CHANNEL_ID: string;
   CRON_SECRET_TOKEN: string;
   AI: Ai; // Cloudflare AI binding
+  CASIE_BRIDGE_KV: KVNamespace; // KV namespace for CASIE Bridge tunnel URL
+  CASIE_BRIDGE_API_TOKEN: string; // Bearer token for CASIE Bridge authentication
   // Media server tunnel configuration
   MEDIA_TUNNEL_URL: string; // Cloudflare Tunnel URL (e.g., https://<uuid>.cfargotunnel.com)
   MEDIA_API_TOKEN: string; // Bearer token for tunnel authentication
@@ -154,6 +156,10 @@ export default {
         case "media":
           // Defer response and process in background
           ctx.waitUntil(handleMediaDeferred(interaction, env));
+          return json({ type: DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE });
+        case "files":
+          // Defer response and process in background
+          ctx.waitUntil(handleFilesDeferred(interaction, env));
           return json({ type: DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE });
         default:
           return json({
@@ -906,6 +912,104 @@ async function bulkDeleteMessages(
   });
 
   return res.ok;
+}
+
+// ========== FILES COMMAND HANDLER ==========
+
+async function handleFilesDeferred(
+  interaction: DiscordInteraction,
+  env: Env
+): Promise<void> {
+  try {
+    // Get user query (natural language)
+    const userQuery =
+      interaction.data?.options?.[0]?.value?.trim() ||
+      "list the available tv shows";
+
+    // Fetch tunnel URL from KV
+    const tunnelUrl = await env.CASIE_BRIDGE_KV.get("current_tunnel_url");
+    if (!tunnelUrl) {
+      await sendFollowup(
+        interaction,
+        "📁 CASIE Bridge is not running. Please start the local server and tunnel."
+      );
+      return;
+    }
+
+    // Fetch videos data from tunnel
+    const videosResponse = await fetch(`${tunnelUrl}/videos`, {
+      headers: {
+        "Authorization": `Bearer ${env.CASIE_BRIDGE_API_TOKEN}`,
+      },
+    });
+
+    if (!videosResponse.ok) {
+      await sendFollowup(
+        interaction,
+        `📁 Failed to connect to CASIE Bridge: ${videosResponse.status} ${videosResponse.statusText}`
+      );
+      return;
+    }
+
+    const videosData = await videosResponse.json();
+    const videosContent = videosData.content;
+
+    // Parse user intent with LLM
+    const response = await parseFilesQuery(
+      env.AI,
+      env.OPENROUTER_API_KEY,
+      userQuery,
+      videosContent
+    );
+
+    await sendFollowup(interaction, response);
+  } catch (err: any) {
+    await sendFollowup(
+      interaction,
+      `❌ Error querying files: ${err.message}`
+    );
+  }
+}
+
+// Parse user query and respond based on videos.md content
+async function parseFilesQuery(
+  ai: Ai,
+  openRouterKey: string,
+  userQuery: string,
+  videosContent: string
+): Promise<string> {
+  const systemPrompt = `You are a TV show library assistant. You have access to the user's TV show library index.
+
+Your task is to answer user queries about their TV show collection.
+
+INSTRUCTIONS:
+- Answer questions directly and concisely
+- For "list" queries: List all shows with season/episode counts
+- For "search" queries: Find matching shows and provide their details
+- For "how many" queries: Count and report the numbers
+- For specific show queries: Provide detailed season/episode breakdown
+- Keep responses under 150 words unless listing many shows
+- Use friendly, conversational tone
+- Format with markdown for readability
+
+If the user asks about a show not in the library, politely inform them it's not available.`;
+
+  const userPrompt = `User Query: "${userQuery}"
+
+TV Show Library:
+${videosContent}
+
+Please answer the user's query based on the library data above.`;
+
+  const response = await callLLM(
+    ai,
+    openRouterKey,
+    systemPrompt,
+    userPrompt,
+    500
+  );
+
+  return response || "I couldn't process your query. Please try again.";
 }
 
 // ========== MEDIA COMMAND HANDLER ==========

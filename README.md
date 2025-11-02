@@ -34,6 +34,12 @@ A general-purpose AI assistant for conversations, web research, and weather upda
   - Optional location parameter (defaults to your configured location)
   - Examples: "Buffalo", "New York", "Tokyo"
 
+*Media Library:*
+- `/files <query>` - Query your local TV show library with natural language
+  - "list the available tv shows"
+  - "how many episodes of friends?"
+  - "search for game of thrones"
+
 *Utility:*
 - `/clear` - Clear all messages in the channel (requires manage messages permission)
 
@@ -418,6 +424,211 @@ All sensitive credentials are stored securely in Cloudflare's secret management 
 - Brave Search (web search)
 - Spotify (music control)
 - Discord (bot platform)
+
+---
+
+## 🌉 CASIE Bridge - Local Server Tunnel
+
+A self-contained Windows environment for running a FastAPI server locally and exposing it securely via Cloudflare Tunnel with automatic URL upload to Cloudflare KV.
+
+### What is CASIE Bridge?
+
+CASIE Bridge creates a secure bridge between your local development environment and the internet, allowing Discord bots (or other services) to communicate with local services running on your Windows machine. Perfect for:
+- Local development and testing
+- Accessing local APIs from remote services
+- Running bridge services without cloud hosting
+- Quick prototyping with automatic HTTPS URLs
+
+### Features
+
+- **FastAPI Server**: Lightweight Python web server running on `http://127.0.0.1:8000`
+- **Cloudflare Tunnel**: Free HTTPS tunnel exposing your local server publicly
+- **Bearer Token Auth**: Secure all endpoints with token-based authentication
+- **KV URL Storage**: Automatically uploads dynamic tunnel URL to Cloudflare KV
+- **Auto-start**: Configured to start automatically on Windows user login
+- **Zero Config**: Runs without port forwarding or router configuration
+
+### Quick Reference
+
+**Your API Token**: `YDC0GBTpJj3uyHl-2fh4d-ZFj8cj4sCZBJqjjjO_yh8`
+
+**Get Current Tunnel URL**:
+```powershell
+npx wrangler kv key get --namespace-id=fe92484d4d2842e2a035aef260eb5aec --remote "current_tunnel_url"
+```
+
+**Make Authenticated Request**:
+```bash
+curl -H "Authorization: Bearer YDC0GBTpJj3uyHl-2fh4d-ZFj8cj4sCZBJqjjjO_yh8" <tunnel-url>
+```
+
+### Available Endpoints
+
+- **`GET /`** - Health check endpoint
+- **`GET /health`** - Detailed health check
+- **`GET /videos`** - Get TV shows index from videos.md file
+
+### TV Show Indexing
+
+CASIE Bridge includes automatic TV show library indexing that scans your local media directory and generates a markdown index.
+
+**How it works:**
+1. Run `python videos.py` to scan your TV directory
+2. Generates `videos.md` with show/season/episode information
+3. Accessible via `/videos` endpoint
+4. Discord bot queries this data with `/files` command
+
+**Regenerate Index:**
+```powershell
+cd D:\casie\casie-bridge
+python videos.py
+```
+
+**Configure TV Directory:**
+Edit `videos.py` line 145:
+```python
+tv_path = r"C:\Users\apoor\Videos\TV"  # Change to your TV directory
+```
+
+### Directory Structure
+
+```
+casie-bridge/
+├── main.py                 # FastAPI application
+├── videos.py               # TV show directory scanner
+├── videos.md               # Generated TV shows index (gitignored)
+├── .env                    # Environment config (contains secrets)
+├── start_fastapi.ps1       # FastAPI launcher
+├── start_tunnel.ps1        # Tunnel launcher with KV upload
+├── start_casie.ps1         # Combined startup script
+├── stop_casie.ps1          # Stop all services
+├── setup_autostart.ps1     # Configure Task Scheduler
+└── tunnel.log              # Cloudflare tunnel output
+```
+
+### Manual Control
+
+**Start Services**:
+```powershell
+powershell -ExecutionPolicy Bypass -File D:\casie\casie-bridge\start_casie.ps1
+```
+
+**Stop Services**:
+```powershell
+D:\casie\casie-bridge\stop_casie.ps1
+```
+
+**Check Status**:
+```powershell
+Get-Process -Name "python","cloudflared"
+```
+
+### Security
+
+All API endpoints require Bearer token authentication. Requests without valid tokens receive `401 Unauthorized`.
+
+**Your Auth Token** (keep secret):
+- Token: `YDC0GBTpJj3uyHl-2fh4d-ZFj8cj4sCZBJqjjjO_yh8`
+- Stored in: `D:\casie\casie-bridge\.env`
+- Rotate monthly for security
+
+**Making Requests**:
+```bash
+# Without auth - FAILS
+curl https://your-tunnel-url.trycloudflare.com
+# Response: {"detail":"Not authenticated"}
+
+# With auth - SUCCESS
+curl -H "Authorization: Bearer YDC0GBTpJj3uyHl-2fh4d-ZFj8cj4sCZBJqjjjO_yh8" \
+  https://your-tunnel-url.trycloudflare.com
+# Response: {"ok":true,"service":"CASIE Bridge"}
+```
+
+### Automatic Startup
+
+CASIE Bridge is configured to start automatically when you log into Windows via Task Scheduler.
+
+**Task Details**:
+- Name: "CASIE Bridge"
+- Trigger: User logon
+- Privileges: Highest (Administrator)
+- Script: `D:\casie\casie-bridge\start_casie.ps1`
+
+**Manage Autostart**:
+```powershell
+# View task
+Get-ScheduledTask -TaskName "CASIE Bridge"
+
+# Disable autostart
+Unregister-ScheduledTask -TaskName "CASIE Bridge" -Confirm:$false
+
+# Re-enable
+powershell -ExecutionPolicy Bypass -File D:\casie\casie-bridge\setup_autostart.ps1
+```
+
+### Configuration
+
+All configuration is stored in `D:\casie\casie-bridge\.env`:
+
+```env
+CLOUDFLARE_ACCOUNT_ID=57a380cabf0851d1d6fcadc7eb01e2c1
+KV_NAMESPACE_ID=fe92484d4d2842e2a035aef260eb5aec
+API_AUTH_TOKEN=YDC0GBTpJj3uyHl-2fh4d-ZFj8cj4sCZBJqjjjO_yh8
+```
+
+**Generate New Token**:
+```powershell
+python -c "import secrets; print(secrets.token_urlsafe(32))"
+```
+
+Then update in `.env` and restart services.
+
+### Troubleshooting
+
+**Services Won't Start**:
+```powershell
+# Kill existing processes
+Stop-Process -Name "python","cloudflared" -Force
+
+# Restart
+D:\casie\casie-bridge\start_casie.ps1
+```
+
+**Tunnel URL Not in KV**:
+```powershell
+# Check log for URL
+cat D:\casie\casie-bridge\tunnel.log | Select-String "trycloudflare.com"
+
+# Manually upload
+npx wrangler kv key put --namespace-id=fe92484d4d2842e2a035aef260eb5aec --remote "current_tunnel_url" "<url>"
+```
+
+**Authentication Failures**:
+```powershell
+# Verify token in .env matches your requests
+cat D:\casie\casie-bridge\.env | Select-String "API_AUTH_TOKEN"
+```
+
+### Requirements
+
+- **Python 3.13+**: `winget install Python.Python.3.13`
+- **cloudflared**: `winget install Cloudflare.cloudflared`
+- **Node.js/npm**: For wrangler commands
+- **Python packages**: `pip install fastapi uvicorn requests`
+
+### Integration with Discord Bots
+
+The tunnel URL stored in Cloudflare KV can be accessed by your Discord bots to communicate with local services:
+
+```javascript
+// In your Discord bot worker
+const tunnelUrl = await env.CASIE_BRIDGE.get('current_tunnel_url');
+const response = await fetch(tunnelUrl, {
+  headers: {
+    'Authorization': 'Bearer YDC0GBTpJj3uyHl-2fh4d-ZFj8cj4sCZBJqjjjO_yh8'
+  }
+});
+```
 
 ---
 

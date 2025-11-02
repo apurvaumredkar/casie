@@ -11,6 +11,25 @@
  *   DISCORD_BOT_TOKEN=xxx APPLICATION_ID=yyy node register-commands.js
  */
 
+// Load .env file
+const fs = require('fs');
+const path = require('path');
+
+const envPath = path.join(__dirname, '.env');
+if (fs.existsSync(envPath)) {
+  const envContent = fs.readFileSync(envPath, 'utf-8');
+  envContent.split('\n').forEach(line => {
+    line = line.trim();
+    if (line && !line.startsWith('#') && line.includes('=')) {
+      const [key, ...valueParts] = line.split('=');
+      const value = valueParts.join('=').trim();
+      if (!process.env[key.trim()]) {
+        process.env[key.trim()] = value;
+      }
+    }
+  });
+}
+
 const DISCORD_BOT_TOKEN = process.env.DISCORD_BOT_TOKEN || 'YOUR_BOT_TOKEN_HERE';
 const APPLICATION_ID = process.env.APPLICATION_ID || 'YOUR_APPLICATION_ID_HERE';
 
@@ -58,6 +77,19 @@ const commands = [
     name: 'clear',
     description: 'Clear all messages in the channel',
     dm_permission: false,
+  },
+  {
+    name: 'files',
+    description: 'Query your local TV show library',
+    dm_permission: false,
+    options: [
+      {
+        name: 'query',
+        description: 'What would you like to know?',
+        type: 3, // STRING type
+        required: true,
+      },
+    ],
   },
 ];
 

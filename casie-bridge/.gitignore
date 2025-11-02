@@ -1,0 +1,28 @@
+# Environment variables (contains sensitive credentials)
+.env
+
+# Log files
+tunnel.log
+tunnel_url.txt
+
+# Generated index files (personal media library)
+videos.md
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Virtual environment
+venv/
+env/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
