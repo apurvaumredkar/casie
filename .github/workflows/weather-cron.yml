@@ -19,7 +19,7 @@ jobs:
           # Step 1: Get tunnel URL from Cloudflare KV
           echo "Fetching tunnel URL from Cloudflare KV..."
           tunnel_url=$(curl -s -X GET \
-            "https://api.cloudflare.com/client/v4/accounts/${{ secrets.CLOUDFLARE_ACCOUNT_ID }}/storage/kv/namespaces/${{ secrets.KV_NAMESPACE_ID }}/values/current_tunnel_url" \
+            "https://api.cloudflare.com/client/v4/accounts/${{ secrets.CLOUDFLARE_ACCOUNT_ID }}/storage/kv/namespaces/${{ secrets.BRIDGE_KV_NAMESPACE_ID }}/values/current_tunnel_url" \
             -H "Authorization: Bearer ${{ secrets.CLOUDFLARE_API_TOKEN }}" | tr -d '"')
 
           if [ -z "$tunnel_url" ] || [ "$tunnel_url" = "null" ]; then
