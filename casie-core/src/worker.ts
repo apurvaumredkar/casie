@@ -884,11 +884,10 @@ async function handleOpenDeferred(
 
     // Format the match info nicely
     const matchInfo = `**${bestMatch.series}** S${String(bestMatch.season).padStart(2, '0')}E${String(bestMatch.episode).padStart(2, '0')}`;
-    const scorePercent = Math.round(bestMatch.score * 100);
 
     await sendFollowup(
       interaction,
-      `✅ Opening: ${matchInfo}\n🎯 Match confidence: ${scorePercent}%`
+      `✅ Opening: ${matchInfo}`
     );
   } catch (err: any) {
     await sendFollowup(
