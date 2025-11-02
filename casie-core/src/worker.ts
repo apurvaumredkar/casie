@@ -51,8 +51,6 @@ interface Env {
   DISCORD_BOT_TOKEN: string;
   OPENROUTER_API_KEY: string;
   BRAVE_API_KEY: string;
-  WEATHER_CHANNEL_ID: string;
-  CRON_SECRET_TOKEN: string;
   AI: Ai; // Cloudflare AI binding
   CASIE_BRIDGE_KV: KVNamespace; // KV namespace for CASIE Bridge tunnel URL
   CASIE_BRIDGE_API_TOKEN: string; // Bearer token for CASIE Bridge authentication
@@ -108,11 +106,6 @@ export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
 
-    // Handle CRON endpoint for scheduled weather updates
-    if (url.pathname === "/cron/weather" && request.method === "GET") {
-      return handleCronWeather(request, env);
-    }
-
     if (request.method !== "POST")
       return new Response("CASIE is running on Discord", { status: 200 });
 
@@ -148,10 +141,6 @@ export default {
         case "web-search":
           // Defer response and process in background
           ctx.waitUntil(handleSearchDeferred(interaction, env));
-          return json({ type: DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE });
-        case "weather":
-          // Defer response and process in background
-          ctx.waitUntil(handleWeatherDeferred(interaction, env));
           return json({ type: DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE });
         case "clear":
           // Process silently in background (no response)
@@ -240,30 +229,6 @@ export default {
 
     return new Response("unhandled interaction type", { status: 400 });
   },
-
-  // Scheduled handler for cron triggers
-  async scheduled(event: ScheduledEvent, env: Env, ctx: ExecutionContext): Promise<void> {
-    // Send daily weather update at 7 AM EST (11 AM UTC)
-    try {
-      // Create a request object with authorization header to reuse existing handleCronWeather function
-      const request = new Request("https://casie-core.apoorv-umredkar.workers.dev/cron/weather", {
-        method: "GET",
-        headers: {
-          "Authorization": `Bearer ${env.CRON_SECRET_TOKEN}`
-        }
-      });
-
-      const response = await handleCronWeather(request, env);
-
-      if (response.status === 200) {
-        console.log("✅ Scheduled weather update sent successfully");
-      } else {
-        console.error(`❌ Scheduled weather update failed with status ${response.status}`);
-      }
-    } catch (error) {
-      console.error("❌ Error in scheduled weather update:", error);
-    }
-  },
 };
 
 // ========== COMMAND HANDLERS ==========
@@ -324,93 +289,6 @@ async function handleSearchDeferred(
   }
 }
 
-async function handleWeatherDeferred(
-  interaction: DiscordInteraction,
-  env: Env
-): Promise<void> {
-  try {
-    // Get location from parameter or fetch from CASIE Bridge
-    const userProvidedLocation = interaction.data?.options?.[0]?.value?.trim();
-    let locationQuery: string;
-
-    if (userProvidedLocation) {
-      // User specified a location
-      locationQuery = userProvidedLocation;
-    } else {
-      // Fetch user's location from CASIE Bridge
-      try {
-        const tunnelUrl = await env.CASIE_BRIDGE_KV.get("current_tunnel_url");
-        if (!tunnelUrl) {
-          await sendFollowup(
-            interaction,
-            "📍 CASIE Bridge is not running. Please specify a location or start the bridge server."
-          );
-          return;
-        }
-
-        const locationResponse = await fetch(`${tunnelUrl}/location`, {
-          headers: {
-            "Authorization": `Bearer ${env.CASIE_BRIDGE_API_TOKEN}`,
-          },
-        });
-
-        if (!locationResponse.ok) {
-          throw new Error(`Location API returned ${locationResponse.status}`);
-        }
-
-        const locationData = await locationResponse.json();
-        const loc = locationData.location;
-
-        // Use city, state format for better weather API results
-        locationQuery = `${loc.city}, ${loc.regionName}`;
-      } catch (locErr: any) {
-        console.error("Failed to fetch location from bridge:", locErr.message);
-        // Fallback to Buffalo NY if location fetch fails
-        locationQuery = "Buffalo NY";
-      }
-    }
-
-    // Get weather data for the location (using wttr.in)
-    const weatherData = await getWeatherData(locationQuery);
-    if (!weatherData || !weatherData.current_condition || !weatherData.nearest_area) {
-      await sendFollowup(
-        interaction,
-        `I couldn't fetch weather data for "${locationQuery}". Please check the location name and try again.`
-      );
-      return;
-    }
-
-    // Build location data object for LLM (wttr.in format)
-    const locationForLLM = {
-      city: weatherData.nearest_area[0].areaName[0].value,
-      regionName: weatherData.nearest_area[0].region[0].value,
-      country: weatherData.nearest_area[0].country[0].value,
-    };
-
-    // Summarize weather with LLM
-    const summary = await summarizeWeather(
-      locationForLLM,
-      weatherData,
-      env.AI,
-      env.OPENROUTER_API_KEY
-    );
-    const weatherSummary = summary || "I couldn't summarize the weather information.";
-
-    // Get current time as Unix timestamp for Discord's dynamic timestamp format
-    const unixTimestamp = Math.floor(Date.now() / 1000);
-    // Discord will automatically convert this to user's local timezone
-    const discordTimestamp = `<t:${unixTimestamp}:f>`; // f = Short Date/Time format
-
-    // Format header with location and Discord timestamp
-    const header = `# Weather Report - ${locationForLLM.city}, ${locationForLLM.regionName}\n**${discordTimestamp}**\n\n`;
-    const reply = header + weatherSummary;
-
-    await sendFollowup(interaction, reply);
-  } catch (err: any) {
-    await sendFollowup(interaction, `Error fetching weather: ${err.message}`);
-  }
-}
-
 async function handleClearDeferred(
   interaction: DiscordInteraction,
   env: Env
@@ -457,148 +335,6 @@ async function handleClearDeferred(
     // Even on error, delete the response silently
     await deleteOriginalMessage(interaction);
     console.error('Error clearing messages:', err.message);
-  }
-}
-
-async function handleCronWeather(
-  request: Request,
-  env: Env
-): Promise<Response> {
-  try {
-    // Validate secret token
-    const authHeader = request.headers.get("Authorization");
-    if (!authHeader || !authHeader.startsWith("Bearer ")) {
-      return new Response(JSON.stringify({ error: "Missing authorization header" }), {
-        status: 401,
-        headers: { "Content-Type": "application/json" },
-      });
-    }
-
-    const token = authHeader.substring(7); // Remove "Bearer " prefix
-    if (token !== env.CRON_SECRET_TOKEN) {
-      return new Response(JSON.stringify({ error: "Invalid token" }), {
-        status: 401,
-        headers: { "Content-Type": "application/json" },
-      });
-    }
-
-    // Fetch user's location from CASIE Bridge
-    let locationQuery = "Buffalo NY"; // Fallback default
-    try {
-      const tunnelUrl = await env.CASIE_BRIDGE_KV.get("current_tunnel_url");
-      if (tunnelUrl) {
-        const locationResponse = await fetch(`${tunnelUrl}/location`, {
-          headers: {
-            "Authorization": `Bearer ${env.CASIE_BRIDGE_API_TOKEN}`,
-          },
-        });
-
-        if (locationResponse.ok) {
-          const locationData = await locationResponse.json();
-          const loc = locationData.location;
-          locationQuery = `${loc.city}, ${loc.regionName}`;
-        }
-      }
-    } catch (locErr: any) {
-      console.error("CRON: Failed to fetch location from bridge, using fallback:", locErr.message);
-    }
-
-    // Get weather for the location (using wttr.in)
-    const weatherData = await getWeatherData(locationQuery);
-    if (!weatherData || !weatherData.current_condition || !weatherData.nearest_area) {
-      return new Response(JSON.stringify({ error: "Failed to fetch weather data" }), {
-        status: 500,
-        headers: { "Content-Type": "application/json" },
-      });
-    }
-
-    // Build location data object for LLM (wttr.in format)
-    const locationForLLM = {
-      city: weatherData.nearest_area[0].areaName[0].value,
-      regionName: weatherData.nearest_area[0].region[0].value,
-      country: weatherData.nearest_area[0].country[0].value,
-    };
-
-    // Summarize weather with LLM
-    const summary = await summarizeWeather(
-      locationForLLM,
-      weatherData,
-      env.AI,
-      env.OPENROUTER_API_KEY
-    );
-
-    if (!summary) {
-      return new Response(JSON.stringify({ error: "Failed to generate weather summary" }), {
-        status: 500,
-        headers: { "Content-Type": "application/json" },
-      });
-    }
-
-    // Clear channel before sending new weather update (keep it clean)
-    try {
-      const messages = await fetchChannelMessages(env.WEATHER_CHANNEL_ID, env.DISCORD_BOT_TOKEN);
-      if (messages && messages.length > 0) {
-        // Filter messages less than 14 days old (Discord API limitation)
-        const twoWeeksAgo = Date.now() - 14 * 24 * 60 * 60 * 1000;
-        const deletableMessages = messages.filter((msg: any) => {
-          const msgTimestamp = new Date(msg.timestamp).getTime();
-          return msgTimestamp > twoWeeksAgo;
-        });
-
-        if (deletableMessages.length > 0) {
-          await bulkDeleteMessages(
-            env.WEATHER_CHANNEL_ID,
-            deletableMessages.map((msg: any) => msg.id),
-            env.DISCORD_BOT_TOKEN
-          );
-        }
-      }
-    } catch (clearError) {
-      // Don't fail the whole operation if clearing fails
-      console.error('Failed to clear channel:', clearError);
-    }
-
-    // Format weather message with header (like slash command)
-    // Get current time as Unix timestamp for Discord's dynamic timestamp format
-    const unixTimestamp = Math.floor(Date.now() / 1000);
-    // Discord will automatically convert this to user's local timezone
-    const discordTimestamp = `<t:${unixTimestamp}:f>`; // f = Short Date/Time format
-    const header = `# Weather Report - ${locationForLLM.city}, ${locationForLLM.regionName}\n**${discordTimestamp}**\n\n`;
-    const formattedMessage = header + summary;
-
-    // Send to Discord channel
-    const sent = await sendScheduledDiscordMessage(
-      env.WEATHER_CHANNEL_ID,
-      formattedMessage,
-      env.DISCORD_BOT_TOKEN
-    );
-
-    if (sent) {
-      return new Response(
-        JSON.stringify({
-          success: true,
-          message: "Weather update sent successfully",
-          location: `${weatherData.nearest_area[0].areaName[0].value}, ${weatherData.nearest_area[0].region[0].value}`,
-        }),
-        {
-          status: 200,
-          headers: { "Content-Type": "application/json" },
-        }
-      );
-    } else {
-      return new Response(JSON.stringify({ error: "Failed to send Discord message" }), {
-        status: 500,
-        headers: { "Content-Type": "application/json" },
-      });
-    }
-  } catch (err: any) {
-    return new Response(
-      JSON.stringify({ error: `CRON handler error: ${err.message}` }),
-      {
-        status: 500,
-        headers: { "Content-Type": "application/json" },
-      }
-    );
   }
 }
 
@@ -913,104 +649,6 @@ ${joined}
 Provide an intelligent response based on the query type (factual, specific, or general).`;
 
   return await callLLM(ai, openRouterKey, systemPrompt, userPrompt, 600);
-}
-
-// ---- Weather API (wttr.in) ----
-async function getWeatherData(
-  location: string
-): Promise<any> {
-  // Use ?m parameter to explicitly request metric units
-  const url = `https://wttr.in/${encodeURIComponent(location)}?format=j1&m`;
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`Weather API returned ${res.status}`);
-  return res.json();
-}
-
-// ---- Weather Summarization ----
-async function summarizeWeather(
-  locationData: any,
-  weatherData: any,
-  ai: Ai,
-  openRouterKey: string
-): Promise<string | null> {
-  const systemPrompt = `
-You are CASIE, a helpful and engaging weather assistant.
-
-Your task is to summarize weather information in a friendly, conversational, and contextually aware manner.
-
-IMPORTANT INSTRUCTIONS:
-- Keep your response between 150-200 words
-- Pay attention to the local time to provide time-appropriate context
-  * Morning (06:00-11:59): Mention sunrise, morning activities
-  * Afternoon (12:00-17:59): Discuss daytime conditions
-  * Evening (18:00-21:59): Talk about sunset, evening weather
-  * Night (22:00-05:59): Focus on overnight conditions, visibility
-- Reference the time of day naturally (e.g., "this evening", "tonight", "this morning")
-- Use emojis sparingly but appropriately (☀️🌙⛅🌧️❄️💨)
-- Include key details: temperature, feels-like, conditions, humidity, wind
-- Provide practical advice based on conditions (e.g., "grab an umbrella", "stay hydrated")
-- Use a warm, approachable, and helpful tone
-- Be conversational but informative
-
-Remember: The local time tells you whether it's day or night. Time format is 24-hour (e.g., "23:45" means night).`;
-
-  // Extract current conditions from wttr.in response
-  const current = weatherData.current_condition[0];
-  const location = weatherData.nearest_area[0];
-  const astronomy = weatherData.weather[0]?.astronomy[0];
-
-  // Determine if it's day or night based on current time
-  const localTime = current.localObsDateTime;
-  const hour = parseInt(localTime.split(' ')[1].split(':')[0]);
-  const isPM = localTime.includes('PM');
-  const hour24 = isPM && hour !== 12 ? hour + 12 : (!isPM && hour === 12 ? 0 : hour);
-  const isDay = hour24 >= 6 && hour24 < 18;
-
-  const weatherInfo = `
-Location: ${locationData.city}, ${locationData.regionName}, ${locationData.country}
-Local Time: ${localTime}
-Is Day: ${isDay ? "Yes (Daytime)" : "No (Nighttime)"}
-Temperature: ${current.temp_C}°C
-Condition: ${current.weatherDesc[0].value}
-Feels Like: ${current.FeelsLikeC}°C
-Humidity: ${current.humidity}%
-Wind: ${current.windspeedKmph} km/h ${current.winddir16Point}
-Precipitation: ${current.precipMM} mm
-Cloud Cover: ${current.cloudcover}%${astronomy ? `
-Sunrise: ${astronomy.sunrise}
-Sunset: ${astronomy.sunset}` : ''}`;
-
-  const userPrompt = `Summarize this weather data:\n\n${weatherInfo}`;
-
-  return await callLLM(ai, openRouterKey, systemPrompt, userPrompt, 500);
-}
-
-// ---- Discord Channel Messages ----
-async function sendScheduledDiscordMessage(
-  channelId: string,
-  message: string,
-  botToken: string
-): Promise<boolean> {
-  try {
-    const response = await fetch(
-      `https://discord.com/api/v10/channels/${channelId}/messages`,
-      {
-        method: "POST",
-        headers: {
-          Authorization: `Bot ${botToken}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          content: message,
-        }),
-      }
-    );
-
-    return response.ok;
-  } catch (error) {
-    console.error("Failed to send scheduled message:", error);
-    return false;
-  }
 }
 
 async function fetchChannelMessages(

@@ -12,10 +12,5 @@ binding = "AI"
 binding = "CASIE_BRIDGE_KV"
 id = "fe92484d4d2842e2a035aef260eb5aec"
 
-# Cron trigger for daily weather updates
-# Runs at 11:00 UTC (7:00 AM EST) on weekdays
-[triggers]
-crons = ["0 11 * * 1-5"]
-
 [observability]
 enabled = true
