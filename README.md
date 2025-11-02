@@ -450,16 +450,14 @@ CASIE Bridge creates a secure bridge between your local development environment 
 
 ### Quick Reference
 
-**Your API Token**: `YDC0GBTpJj3uyHl-2fh4d-ZFj8cj4sCZBJqjjjO_yh8`
-
 **Get Current Tunnel URL**:
 ```powershell
-npx wrangler kv key get --namespace-id=fe92484d4d2842e2a035aef260eb5aec --remote "current_tunnel_url"
+npx wrangler kv key get --namespace-id=YOUR_KV_NAMESPACE_ID --remote "current_tunnel_url"
 ```
 
 **Make Authenticated Request**:
 ```bash
-curl -H "Authorization: Bearer YDC0GBTpJj3uyHl-2fh4d-ZFj8cj4sCZBJqjjjO_yh8" <tunnel-url>
+curl -H "Authorization: Bearer YOUR_API_AUTH_TOKEN" <tunnel-url>
 ```
 
 ### Available Endpoints
@@ -487,7 +485,7 @@ python videos.py
 **Configure TV Directory:**
 Edit `videos.py` line 145:
 ```python
-tv_path = r"C:\Users\apoor\Videos\TV"  # Change to your TV directory
+tv_path = r"C:\path\to\your\TV"  # Change to your TV directory
 ```
 
 ### Directory Structure
@@ -527,9 +525,9 @@ Get-Process -Name "python","cloudflared"
 
 All API endpoints require Bearer token authentication. Requests without valid tokens receive `401 Unauthorized`.
 
-**Your Auth Token** (keep secret):
-- Token: `YDC0GBTpJj3uyHl-2fh4d-ZFj8cj4sCZBJqjjjO_yh8`
-- Stored in: `D:\casie\casie-bridge\.env`
+**Auth Token Configuration**:
+- Generate secure token: `python -c "import secrets; print(secrets.token_urlsafe(32))"`
+- Store in: `casie-bridge/.env` as `API_AUTH_TOKEN`
 - Rotate monthly for security
 
 **Making Requests**:
@@ -539,7 +537,7 @@ curl https://your-tunnel-url.trycloudflare.com
 # Response: {"detail":"Not authenticated"}
 
 # With auth - SUCCESS
-curl -H "Authorization: Bearer YDC0GBTpJj3uyHl-2fh4d-ZFj8cj4sCZBJqjjjO_yh8" \
+curl -H "Authorization: Bearer YOUR_API_AUTH_TOKEN" \
   https://your-tunnel-url.trycloudflare.com
 # Response: {"ok":true,"service":"CASIE Bridge"}
 ```
@@ -563,17 +561,17 @@ Get-ScheduledTask -TaskName "CASIE Bridge"
 Unregister-ScheduledTask -TaskName "CASIE Bridge" -Confirm:$false
 
 # Re-enable
-powershell -ExecutionPolicy Bypass -File D:\casie\casie-bridge\setup_autostart.ps1
+powershell -ExecutionPolicy Bypass -File casie-bridge\setup_autostart.ps1
 ```
 
 ### Configuration
 
-All configuration is stored in `D:\casie\casie-bridge\.env`:
+All configuration is stored in `casie-bridge/.env`:
 
 ```env
-CLOUDFLARE_ACCOUNT_ID=57a380cabf0851d1d6fcadc7eb01e2c1
-KV_NAMESPACE_ID=fe92484d4d2842e2a035aef260eb5aec
-API_AUTH_TOKEN=YDC0GBTpJj3uyHl-2fh4d-ZFj8cj4sCZBJqjjjO_yh8
+CLOUDFLARE_ACCOUNT_ID=your_cloudflare_account_id
+KV_NAMESPACE_ID=your_kv_namespace_id
+API_AUTH_TOKEN=your_generated_api_token
 ```
 
 **Generate New Token**:
@@ -597,16 +595,16 @@ D:\casie\casie-bridge\start_casie.ps1
 **Tunnel URL Not in KV**:
 ```powershell
 # Check log for URL
-cat D:\casie\casie-bridge\tunnel.log | Select-String "trycloudflare.com"
+cat casie-bridge\tunnel.log | Select-String "trycloudflare.com"
 
 # Manually upload
-npx wrangler kv key put --namespace-id=fe92484d4d2842e2a035aef260eb5aec --remote "current_tunnel_url" "<url>"
+npx wrangler kv key put --namespace-id=YOUR_KV_NAMESPACE_ID --remote "current_tunnel_url" "<url>"
 ```
 
 **Authentication Failures**:
 ```powershell
 # Verify token in .env matches your requests
-cat D:\casie\casie-bridge\.env | Select-String "API_AUTH_TOKEN"
+cat casie-bridge\.env | Select-String "API_AUTH_TOKEN"
 ```
 
 ### Requirements
@@ -625,7 +623,7 @@ The tunnel URL stored in Cloudflare KV can be accessed by your Discord bots to c
 const tunnelUrl = await env.CASIE_BRIDGE.get('current_tunnel_url');
 const response = await fetch(tunnelUrl, {
   headers: {
-    'Authorization': 'Bearer YDC0GBTpJj3uyHl-2fh4d-ZFj8cj4sCZBJqjjjO_yh8'
+    'Authorization': `Bearer ${env.CASIE_BRIDGE_API_TOKEN}`
   }
 });
 ```
