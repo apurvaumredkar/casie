@@ -418,3 +418,401 @@ All sensitive credentials are stored securely in Cloudflare's secret management 
 - Brave Search (web search)
 - Spotify (music control)
 - Discord (bot platform)
+
+---
+
+## 📁 Local Media Server Integration
+
+### Overview
+
+The media server feature enables real-time access to your local media library (TV shows and movies) directly through Discord. Using Cloudflare Tunnel, it provides secure, private connectivity between your PC and the Discord bot without exposing any ports or public IP addresses.
+
+### Architecture
+
+**Components:**
+- **FastAPI Server**: Python-based REST API that scans and serves media library data
+- **Cloudflare Tunnel**: Secure outbound connection from your PC to Cloudflare Edge
+- **Discord Integration**: Natural language queries for browsing and controlling media
+
+**Data Flow:**
+```
+Discord Bot (Edge) → Cloudflare Tunnel → Your PC → Local Files
+```
+
+**Key Advantages:**
+- **No Port Forwarding**: Tunnel creates outbound connection only
+- **No Public IP Exposure**: Your home network remains invisible
+- **No DNS Records**: Tunnel accessible only via UUID (not publicly discoverable)
+- **Real-Time Access**: Query and control media instantly (<500ms latency)
+- **Live Directory Scanning**: No caching, always reflects current state
+
+### Features
+
+**Natural Language Queries:**
+```
+/media query: show all series
+/media query: search for breaking bad
+/media query: info about friends
+/media query: how many shows do I have
+```
+
+**Real-Time Actions:**
+```
+/media query: play breaking bad s01e01
+/media query: play friends season 2 episode 5
+/media query: open breaking bad season 1
+/media query: open friends folder
+```
+
+**Actions:**
+- **Play Episode**: Opens VLC media player on your PC with the selected episode
+- **Open Folder**: Opens Windows Explorer at the series or season folder
+- **Live Search**: Real-time directory scanning (no pre-indexing required)
+- **Series Info**: View detailed season/episode breakdown
+
+### Security Architecture
+
+**Multi-Layer Authentication:**
+1. **Bearer Token**: Secure API token for tunnel access
+2. **Discord User ID**: Restricts access to your Discord account only
+3. **Rate Limiting**: 10 requests/minute per endpoint
+4. **Path Whitelisting**: Only configured media directories accessible
+
+**Privacy Features:**
+- Tunnel UUID not exposed in code or logs
+- No DNS records (tunnel is not discoverable)
+- Token stored securely in Cloudflare Worker secrets
+- All connections encrypted with TLS
+- Personal use only (single Discord user)
+
+### Technology Stack
+
+**Server:**
+- FastAPI (Python web framework)
+- Uvicorn (ASGI server)
+- slowapi (rate limiting)
+- Media scanner with live directory traversal
+
+**Tunnel:**
+- Cloudflare Tunnel (cloudflared)
+- Zero-config outbound connection
+- Automatic failover and reconnection
+- No firewall configuration needed
+
+**Integration:**
+- Cloudflare Worker calls tunnel via HTTPS
+- LLM-based intent parsing (Llama 3.2 3B)
+- Deferred response pattern for long operations
+- Error handling and graceful degradation
+
+### Implementation Guide
+
+**1. Server Setup:**
+```bash
+# Install dependencies
+pip3 install -r requirements.txt
+
+# Configure environment
+cp .env.example .env
+# Edit .env with your paths and tokens
+
+# Start server
+python3 fastapi_server.py
+```
+
+**2. Tunnel Configuration:**
+```bash
+# Install cloudflared
+wget https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
+sudo dpkg -i cloudflared-linux-amd64.deb
+
+# Authenticate with Cloudflare
+cloudflared tunnel login
+
+# Create tunnel
+cloudflared tunnel create casie-media
+
+# Configure tunnel
+nano ~/.cloudflared/config.yml
+# Add configuration pointing to localhost:8000
+
+# Run tunnel
+cloudflared tunnel run casie-media
+```
+
+**3. Worker Integration:**
+```bash
+# Set worker secrets
+wrangler secret put MEDIA_TUNNEL_URL    # Tunnel UUID URL
+wrangler secret put MEDIA_API_TOKEN     # API authentication token
+wrangler secret put YOUR_DISCORD_ID     # Your Discord user ID
+
+# Deploy worker
+npm run deploy
+```
+
+**4. Management:**
+```bash
+# Unified control script
+./media-server.sh start    # Start server and tunnel
+./media-server.sh stop     # Stop both services
+./media-server.sh status   # Check status
+./media-server.sh logs     # View recent logs
+./media-server.sh restart  # Restart services
+```
+
+**5. Auto-Start (Windows Task Scheduler):**
+- Create scheduled task that runs on login
+- Execute `start-media-server.bat`
+- Services start automatically in background
+- No visible windows or interruptions
+
+### API Endpoints
+
+**Query Endpoints:**
+```
+GET  /api/media/list              # List all TV series and movies
+GET  /api/media/search?q=<query>  # Search series by name
+GET  /api/media/info/<series>     # Get detailed series information
+GET  /api/status                  # Server status and disk space
+```
+
+**Action Endpoints:**
+```
+POST /api/media/play              # Play episode in VLC
+POST /api/media/open              # Open folder in Explorer
+```
+
+All endpoints require `Authorization: Bearer <token>` and `X-Discord-User: <id>` headers.
+
+### Performance
+
+**Query Response Times:**
+- List all series: ~1-2 seconds (live directory scan)
+- Search: ~500ms-1s
+- Play/Open actions: ~500ms (near-instant)
+
+**Scalability:**
+- Single user by design (personal media library)
+- No database required (live filesystem scanning)
+- Minimal resource usage (<50MB RAM)
+- Works on any PC (Windows with WSL)
+
+### Use Cases
+
+**Personal Media Management:**
+- Browse your media library from Discord on any device
+- Quick search without opening file explorer
+- Start watching immediately from Discord
+- Manage media while away from PC (mobile Discord)
+
+**Smart Home Integration:**
+- Control media playback via voice (Discord mobile)
+- Queue episodes while commuting
+- Check what's available without VPN/remote access
+- Family-friendly interface for non-technical users
+
+**Development & Testing:**
+- Reference implementation for Cloudflare Tunnel
+- Example of FastAPI + Discord integration
+- Security best practices for personal projects
+- OAuth-less authentication pattern
+---
+
+## 📁 Local Media Server Integration
+
+### Overview
+
+The media server feature enables real-time access to your local media library (TV shows and movies) directly through Discord. Using Cloudflare Tunnel, it provides secure, private connectivity between your PC and the Discord bot without exposing any ports or public IP addresses.
+
+### Architecture
+
+**Components:**
+- **FastAPI Server**: Python-based REST API that scans and serves media library data
+- **Cloudflare Tunnel**: Secure outbound connection from your PC to Cloudflare Edge
+- **Discord Integration**: Natural language queries for browsing and controlling media
+
+**Data Flow:**
+```
+Discord Bot (Edge) → Cloudflare Tunnel → Your PC → Local Files
+```
+
+**Key Advantages:**
+- **No Port Forwarding**: Tunnel creates outbound connection only
+- **No Public IP Exposure**: Your home network remains invisible
+- **No DNS Records**: Tunnel accessible only via UUID (not publicly discoverable)
+- **Real-Time Access**: Query and control media instantly (<500ms latency)
+- **Live Directory Scanning**: No caching, always reflects current state
+
+### Features
+
+**Natural Language Queries:**
+```
+/media query: show all series
+/media query: search for breaking bad
+/media query: info about friends
+/media query: how many shows do I have
+```
+
+**Real-Time Actions:**
+```
+/media query: play breaking bad s01e01
+/media query: play friends season 2 episode 5
+/media query: open breaking bad season 1
+/media query: open friends folder
+```
+
+**Actions:**
+- **Play Episode**: Opens VLC media player on your PC with the selected episode
+- **Open Folder**: Opens Windows Explorer at the series or season folder
+- **Live Search**: Real-time directory scanning (no pre-indexing required)
+- **Series Info**: View detailed season/episode breakdown
+
+### Security Architecture
+
+**Multi-Layer Authentication:**
+1. **Bearer Token**: Secure API token for tunnel access
+2. **Discord User ID**: Restricts access to your Discord account only
+3. **Rate Limiting**: 10 requests/minute per endpoint
+4. **Path Whitelisting**: Only configured media directories accessible
+
+**Privacy Features:**
+- Tunnel UUID not exposed in code or logs
+- No DNS records (tunnel is not discoverable)
+- Token stored securely in Cloudflare Worker secrets
+- All connections encrypted with TLS
+- Personal use only (single Discord user)
+
+### Technology Stack
+
+**Server:**
+- FastAPI (Python web framework)
+- Uvicorn (ASGI server)
+- slowapi (rate limiting)
+- Media scanner with live directory traversal
+
+**Tunnel:**
+- Cloudflare Tunnel (cloudflared)
+- Zero-config outbound connection
+- Automatic failover and reconnection
+- No firewall configuration needed
+
+**Integration:**
+- Cloudflare Worker calls tunnel via HTTPS
+- LLM-based intent parsing (Llama 3.2 3B)
+- Deferred response pattern for long operations
+- Error handling and graceful degradation
+
+### Implementation Guide
+
+**1. Server Setup:**
+```bash
+# Install dependencies
+pip3 install -r requirements.txt
+
+# Configure environment
+cp .env.example .env
+# Edit .env with your paths and tokens
+
+# Start server
+python3 fastapi_server.py
+```
+
+**2. Tunnel Configuration:**
+```bash
+# Install cloudflared
+wget https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
+sudo dpkg -i cloudflared-linux-amd64.deb
+
+# Authenticate with Cloudflare
+cloudflared tunnel login
+
+# Create tunnel
+cloudflared tunnel create casie-media
+
+# Configure tunnel
+nano ~/.cloudflared/config.yml
+# Add configuration pointing to localhost:8000
+
+# Run tunnel
+cloudflared tunnel run casie-media
+```
+
+**3. Worker Integration:**
+```bash
+# Set worker secrets
+wrangler secret put MEDIA_TUNNEL_URL    # Tunnel UUID URL
+wrangler secret put MEDIA_API_TOKEN     # API authentication token
+wrangler secret put YOUR_DISCORD_ID     # Your Discord user ID
+
+# Deploy worker
+npm run deploy
+```
+
+**4. Management:**
+```bash
+# Unified control script
+./media-server.sh start    # Start server and tunnel
+./media-server.sh stop     # Stop both services
+./media-server.sh status   # Check status
+./media-server.sh logs     # View recent logs
+./media-server.sh restart  # Restart services
+```
+
+**5. Auto-Start (Windows Task Scheduler):**
+- Create scheduled task that runs on login
+- Execute `start-media-server.bat`
+- Services start automatically in background
+- No visible windows or interruptions
+
+### API Endpoints
+
+**Query Endpoints:**
+```
+GET  /api/media/list              # List all TV series and movies
+GET  /api/media/search?q=<query>  # Search series by name
+GET  /api/media/info/<series>     # Get detailed series information
+GET  /api/status                  # Server status and disk space
+```
+
+**Action Endpoints:**
+```
+POST /api/media/play              # Play episode in VLC
+POST /api/media/open              # Open folder in Explorer
+```
+
+All endpoints require `Authorization: Bearer <token>` and `X-Discord-User: <id>` headers.
+
+### Performance
+
+**Query Response Times:**
+- List all series: ~1-2 seconds (live directory scan)
+- Search: ~500ms-1s
+- Play/Open actions: ~500ms (near-instant)
+
+**Scalability:**
+- Single user by design (personal media library)
+- No database required (live filesystem scanning)
+- Minimal resource usage (<50MB RAM)
+- Works on any PC (Windows with WSL)
+
+### Use Cases
+
+**Personal Media Management:**
+- Browse your media library from Discord on any device
+- Quick search without opening file explorer
+- Start watching immediately from Discord
+- Manage media while away from PC (mobile Discord)
+
+**Smart Home Integration:**
+- Control media playback via voice (Discord mobile)
+- Queue episodes while commuting
+- Check what's available without VPN/remote access
+- Family-friendly interface for non-technical users
+
+**Development & Testing:**
+- Reference implementation for Cloudflare Tunnel
+- Example of FastAPI + Discord integration
+- Security best practices for personal projects
+- OAuth-less authentication pattern
+

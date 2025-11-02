@@ -40,6 +40,7 @@ export interface Env {
   SPOTIFY_CLIENT_ID: string;
   SPOTIFY_CLIENT_SECRET: string;
   SPOTIFY_REDIRECT_URI: string;
+  SPOTIFY_STATE_SECRET: string; // Private secret for OAuth state signing
   OPENROUTER_API_KEY: string;
   OPENROUTER_MODEL?: string;
   SPOTIFY_TOKENS: KVNamespace;
@@ -288,7 +289,7 @@ async function handleOAuthCallback(url: URL, env: Env): Promise<Response> {
   }
 
   // Verify signed state (stateless - no storage lookup needed)
-  const stateData = await verifySignedState(state, env.DISCORD_PUBLIC_KEY);
+  const stateData = await verifySignedState(state, env.SPOTIFY_STATE_SECRET);
 
   if (!stateData) {
     return new Response(

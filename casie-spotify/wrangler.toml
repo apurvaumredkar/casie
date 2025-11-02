@@ -32,10 +32,6 @@ OPENROUTER_MODEL = "meta-llama/llama-4-scout:free"
 [build]
 command = "npm run build"
 
-# TypeScript support (automatically enabled for .ts files)
-[build.upload]
-format = "service-worker"
-
 # KV namespace for persistent token storage
 [[kv_namespaces]]
 binding = "SPOTIFY_TOKENS"

@@ -10,7 +10,7 @@ import { getAuthorizationUrl, createSignedState } from '../spotify/oauth';
 export interface Env {
   SPOTIFY_CLIENT_ID: string;
   SPOTIFY_REDIRECT_URI: string;
-  DISCORD_PUBLIC_KEY: string; // Used as signing secret
+  SPOTIFY_STATE_SECRET: string; // Private secret for OAuth state signing
 }
 
 export async function handleLinkSpotify(interaction: DiscordInteraction, env: Env): Promise<Response> {
@@ -27,7 +27,7 @@ export async function handleLinkSpotify(interaction: DiscordInteraction, env: En
     timestamp: Date.now(),
   };
 
-  const signedState = await createSignedState(stateData, env.DISCORD_PUBLIC_KEY);
+  const signedState = await createSignedState(stateData, env.SPOTIFY_STATE_SECRET);
 
   // Generate authorization URL
   const authUrl = getAuthorizationUrl(

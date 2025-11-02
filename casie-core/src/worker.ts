@@ -50,10 +50,13 @@ interface Env {
   DISCORD_BOT_TOKEN: string;
   OPENROUTER_API_KEY: string;
   BRAVE_API_KEY: string;
-  WEATHER_API_KEY: string;
   WEATHER_CHANNEL_ID: string;
   CRON_SECRET_TOKEN: string;
   AI: Ai; // Cloudflare AI binding
+  // Media server tunnel configuration
+  MEDIA_TUNNEL_URL: string; // Cloudflare Tunnel URL (e.g., https://<uuid>.cfargotunnel.com)
+  MEDIA_API_TOKEN: string; // Bearer token for tunnel authentication
+  YOUR_DISCORD_ID: string; // Your Discord user ID for access control
 }
 
 interface DiscordOption {
@@ -72,11 +75,20 @@ interface DiscordInteraction {
     name: string;
     options?: DiscordOption[];
   };
+  member?: {
+    user?: {
+      id: string;
+    };
+  };
+  user?: {
+    id: string;
+  };
 }
 
 interface DiscordResponse {
   type: number;
   data?: { content: string };
+  flags?: number; // Message flags (e.g., 64 for ephemeral)
 }
 
 interface BraveResult {
@@ -139,6 +151,10 @@ export default {
           // Process silently in background (no response)
           ctx.waitUntil(handleClearDeferred(interaction, env));
           return json({ type: DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE, flags: 64 }); // Ephemeral, will be deleted
+        case "media":
+          // Defer response and process in background
+          ctx.waitUntil(handleMediaDeferred(interaction, env));
+          return json({ type: DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE });
         default:
           return json({
             type: CHANNEL_MESSAGE_WITH_SOURCE,
@@ -218,9 +234,9 @@ async function handleWeatherDeferred(
     const userProvidedLocation = interaction.data?.options?.[0]?.value?.trim();
     const locationQuery = userProvidedLocation || "Buffalo NY";
 
-    // Get weather data for the location
-    const weatherData = await getWeatherData(locationQuery, env.WEATHER_API_KEY);
-    if (!weatherData) {
+    // Get weather data for the location (using wttr.in)
+    const weatherData = await getWeatherData(locationQuery);
+    if (!weatherData || !weatherData.current_condition || !weatherData.nearest_area) {
       await sendFollowup(
         interaction,
         `I couldn't fetch weather data for "${locationQuery}". Please check the location name and try again.`
@@ -228,11 +244,11 @@ async function handleWeatherDeferred(
       return;
     }
 
-    // Build location data object for LLM
+    // Build location data object for LLM (wttr.in format)
     const locationForLLM = {
-      city: weatherData.location.name,
-      regionName: weatherData.location.region,
-      country: weatherData.location.country,
+      city: weatherData.nearest_area[0].areaName[0].value,
+      regionName: weatherData.nearest_area[0].region[0].value,
+      country: weatherData.nearest_area[0].country[0].value,
     };
 
     // Summarize weather with LLM
@@ -242,7 +258,17 @@ async function handleWeatherDeferred(
       env.AI,
       env.OPENROUTER_API_KEY
     );
-    const reply = summary || "I couldn't summarize the weather information.";
+    const weatherSummary = summary || "I couldn't summarize the weather information.";
+
+    // Get current time (not observation time from weather station)
+    const currentTime = new Date().toLocaleString('en-US', {
+      dateStyle: 'medium',
+      timeStyle: 'short'
+    });
+
+    // Format header with location and time
+    const header = `# Weather Report - ${locationForLLM.city}, ${locationForLLM.regionName}\n**${currentTime}**\n\n`;
+    const reply = header + weatherSummary;
 
     await sendFollowup(interaction, reply);
   } catch (err: any) {
@@ -321,20 +347,20 @@ async function handleCronWeather(
       });
     }
 
-    // Get weather for Buffalo, NY
-    const weatherData = await getWeatherData("Buffalo", env.WEATHER_API_KEY);
-    if (!weatherData) {
+    // Get weather for Buffalo, NY (using wttr.in)
+    const weatherData = await getWeatherData("Buffalo NY");
+    if (!weatherData || !weatherData.current_condition || !weatherData.nearest_area) {
       return new Response(JSON.stringify({ error: "Failed to fetch weather data" }), {
         status: 500,
         headers: { "Content-Type": "application/json" },
       });
     }
 
-    // Build location data object for LLM
+    // Build location data object for LLM (wttr.in format)
     const locationForLLM = {
-      city: weatherData.location.name,
-      regionName: weatherData.location.region,
-      country: weatherData.location.country,
+      city: weatherData.nearest_area[0].areaName[0].value,
+      regionName: weatherData.nearest_area[0].region[0].value,
+      country: weatherData.nearest_area[0].country[0].value,
     };
 
     // Summarize weather with LLM
@@ -352,10 +378,43 @@ async function handleCronWeather(
       });
     }
 
+    // Clear channel before sending new weather update (keep it clean)
+    try {
+      const messages = await fetchChannelMessages(env.WEATHER_CHANNEL_ID, env.DISCORD_BOT_TOKEN);
+      if (messages && messages.length > 0) {
+        // Filter messages less than 14 days old (Discord API limitation)
+        const twoWeeksAgo = Date.now() - 14 * 24 * 60 * 60 * 1000;
+        const deletableMessages = messages.filter((msg: any) => {
+          const msgTimestamp = new Date(msg.timestamp).getTime();
+          return msgTimestamp > twoWeeksAgo;
+        });
+
+        if (deletableMessages.length > 0) {
+          await bulkDeleteMessages(
+            env.WEATHER_CHANNEL_ID,
+            deletableMessages.map((msg: any) => msg.id),
+            env.DISCORD_BOT_TOKEN
+          );
+        }
+      }
+    } catch (clearError) {
+      // Don't fail the whole operation if clearing fails
+      console.error('Failed to clear channel:', clearError);
+    }
+
+    // Format weather message with header (like slash command)
+    // Get current time (not observation time from weather station)
+    const currentTime = new Date().toLocaleString('en-US', {
+      dateStyle: 'medium',
+      timeStyle: 'short'
+    });
+    const header = `# Weather Report - ${locationForLLM.city}, ${locationForLLM.regionName}\n**${currentTime}**\n\n`;
+    const formattedMessage = header + summary;
+
     // Send to Discord channel
     const sent = await sendScheduledDiscordMessage(
       env.WEATHER_CHANNEL_ID,
-      summary,
+      formattedMessage,
       env.DISCORD_BOT_TOKEN
     );
 
@@ -364,7 +423,7 @@ async function handleCronWeather(
         JSON.stringify({
           success: true,
           message: "Weather update sent successfully",
-          location: `${weatherData.location.name}, ${weatherData.location.region}`,
+          location: `${weatherData.nearest_area[0].areaName[0].value}, ${weatherData.nearest_area[0].region[0].value}`,
         }),
         {
           status: 200,
@@ -699,12 +758,12 @@ Provide an intelligent response based on the query type (factual, specific, or g
   return await callLLM(ai, openRouterKey, systemPrompt, userPrompt, 600);
 }
 
-// ---- Weather API ----
+// ---- Weather API (wttr.in) ----
 async function getWeatherData(
-  location: string,
-  apiKey: string
+  location: string
 ): Promise<any> {
-  const url = `http://api.weatherapi.com/v1/current.json?key=${apiKey}&q=${encodeURIComponent(location)}`;
+  // Use ?m parameter to explicitly request metric units
+  const url = `https://wttr.in/${encodeURIComponent(location)}?format=j1&m`;
   const res = await fetch(url);
   if (!res.ok) throw new Error(`Weather API returned ${res.status}`);
   return res.json();
@@ -738,17 +797,31 @@ IMPORTANT INSTRUCTIONS:
 
 Remember: The local time tells you whether it's day or night. Time format is 24-hour (e.g., "23:45" means night).`;
 
+  // Extract current conditions from wttr.in response
+  const current = weatherData.current_condition[0];
+  const location = weatherData.nearest_area[0];
+  const astronomy = weatherData.weather[0]?.astronomy[0];
+
+  // Determine if it's day or night based on current time
+  const localTime = current.localObsDateTime;
+  const hour = parseInt(localTime.split(' ')[1].split(':')[0]);
+  const isPM = localTime.includes('PM');
+  const hour24 = isPM && hour !== 12 ? hour + 12 : (!isPM && hour === 12 ? 0 : hour);
+  const isDay = hour24 >= 6 && hour24 < 18;
+
   const weatherInfo = `
 Location: ${locationData.city}, ${locationData.regionName}, ${locationData.country}
-Local Time: ${weatherData.location.localtime}
-Is Day: ${weatherData.current.is_day === 1 ? "Yes (Daytime)" : "No (Nighttime)"}
-Temperature: ${weatherData.current.temp_c}°C
-Condition: ${weatherData.current.condition.text}
-Feels Like: ${weatherData.current.feelslike_c}°C
-Humidity: ${weatherData.current.humidity}%
-Wind: ${weatherData.current.wind_kph} km/h ${weatherData.current.wind_dir}
-Precipitation: ${weatherData.current.precip_mm} mm
-Cloud Cover: ${weatherData.current.cloud}%`;
+Local Time: ${localTime}
+Is Day: ${isDay ? "Yes (Daytime)" : "No (Nighttime)"}
+Temperature: ${current.temp_C}°C
+Condition: ${current.weatherDesc[0].value}
+Feels Like: ${current.FeelsLikeC}°C
+Humidity: ${current.humidity}%
+Wind: ${current.windspeedKmph} km/h ${current.winddir16Point}
+Precipitation: ${current.precipMM} mm
+Cloud Cover: ${current.cloudcover}%${astronomy ? `
+Sunrise: ${astronomy.sunrise}
+Sunset: ${astronomy.sunset}` : ''}`;
 
   const userPrompt = `Summarize this weather data:\n\n${weatherInfo}`;
 
@@ -833,4 +906,387 @@ async function bulkDeleteMessages(
   });
 
   return res.ok;
+}
+
+// ========== MEDIA COMMAND HANDLER ==========
+
+async function handleMediaDeferred(
+  interaction: DiscordInteraction,
+  env: Env
+): Promise<void> {
+  try {
+    // Get query from user (natural language)
+    const userQuery =
+      interaction.data?.options?.[0]?.value?.trim() ||
+      "show me all my tv series";
+
+    // Get Discord user ID from interaction
+    const discordUserId = interaction.member?.user?.id || interaction.user?.id;
+
+    // Fetch media data from tunnel
+    const mediaData = await callMediaAPI(env, "/api/media/list", "GET", discordUserId);
+
+    if (!mediaData.success) {
+      await sendFollowup(
+        interaction,
+        "📺 Failed to connect to media server. Please ensure the server and tunnel are running."
+      );
+      return;
+    }
+
+    const tvSeries = mediaData.data?.tv_series || {};
+    const movies = mediaData.data?.movies || [];
+
+    // Parse user intent with LLM
+    const intent = await parseMediaIntent(
+      env.AI,
+      env.OPENROUTER_API_KEY,
+      userQuery,
+      Object.keys(tvSeries)
+    );
+
+    // Execute based on intent
+    let response = "";
+
+    switch (intent.action) {
+      case "list_all":
+        response = formatAllSeries(tvSeries);
+        break;
+
+      case "search":
+        response = await handleSearchAction(env, intent.query || "", discordUserId);
+        break;
+
+      case "info":
+        response = await handleInfoAction(env, intent.series_name || "", discordUserId);
+        break;
+
+      case "count":
+        response = formatLibraryStats(mediaData.data);
+        break;
+
+      case "play":
+        response = await handlePlayAction(
+          env,
+          intent.series_name || "",
+          intent.season || 1,
+          intent.episode || 1,
+          discordUserId
+        );
+        break;
+
+      case "open":
+        response = await handleOpenAction(
+          env,
+          intent.series_name || "",
+          intent.season,
+          discordUserId
+        );
+        break;
+
+      default:
+        response = "❓ I'm not sure what you're looking for. Try:\n- 'show all series'\n- 'search for friends'\n- 'info about breaking bad'\n- 'play breaking bad s01e01'\n- 'open breaking bad season 1'";
+    }
+
+    await sendFollowup(interaction, response);
+  } catch (err: any) {
+    await sendFollowup(
+      interaction,
+      `❌ Error querying media library: ${err.message}`
+    );
+  }
+}
+
+// Call media server API via tunnel
+async function callMediaAPI(
+  env: Env,
+  endpoint: string,
+  method: string = "GET",
+  discordUserId?: string,
+  body?: any
+): Promise<any> {
+  const url = `${env.MEDIA_TUNNEL_URL}${endpoint}`;
+
+  const headers: Record<string, string> = {
+    "Authorization": `Bearer ${env.MEDIA_API_TOKEN}`,
+    "Content-Type": "application/json",
+  };
+
+  // Add Discord user ID header if provided
+  if (discordUserId) {
+    headers["X-Discord-User"] = discordUserId;
+  }
+
+  const options: RequestInit = {
+    method,
+    headers,
+  };
+
+  if (body && method !== "GET") {
+    options.body = JSON.stringify(body);
+  }
+
+  const response = await fetch(url, options);
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`Media API error: ${response.status} ${errorText}`);
+  }
+
+  return response.json();
+}
+
+// Handle search action
+async function handleSearchAction(
+  env: Env,
+  query: string,
+  discordUserId?: string
+): Promise<string> {
+  const result = await callMediaAPI(
+    env,
+    `/api/media/search?q=${encodeURIComponent(query)}`,
+    "GET",
+    discordUserId
+  );
+
+  if (!result.success || result.count === 0) {
+    return `🔍 No results found for "${query}"`;
+  }
+
+  const resultsList = result.results
+    .map((series: any) => {
+      return `**${series.name}**\n└─ ${series.total_seasons} seasons, ${series.total_episodes} episodes`;
+    })
+    .join("\n\n");
+
+  return `🔍 **Search Results for "${query}"** (${result.count} found)\n\n${resultsList}`;
+}
+
+// Handle info action
+async function handleInfoAction(
+  env: Env,
+  seriesName: string,
+  discordUserId?: string
+): Promise<string> {
+  try {
+    const result = await callMediaAPI(
+      env,
+      `/api/media/info/${encodeURIComponent(seriesName)}`,
+      "GET",
+      discordUserId
+    );
+
+    if (!result.success) {
+      return `❓ Series "${seriesName}" not found in your library.`;
+    }
+
+    const info = result.data;
+    const seasons = info.seasons || {};
+    const seasonsList = Object.entries(seasons)
+      .sort(([a], [b]) => parseInt(a) - parseInt(b))
+      .map(([season, episodes]) => `Season ${season}: ${episodes} episodes`)
+      .join("\n");
+
+    return `📺 **${info.name}**\n\nTotal: ${info.total_seasons} seasons, ${info.total_episodes} episodes\n\n${seasonsList}`;
+  } catch (err: any) {
+    return `❓ Series "${seriesName}" not found in your library.`;
+  }
+}
+
+// Handle play action
+async function handlePlayAction(
+  env: Env,
+  seriesName: string,
+  season: number,
+  episode: number,
+  discordUserId?: string
+): Promise<string> {
+  try {
+    const result = await callMediaAPI(
+      env,
+      "/api/media/play",
+      "POST",
+      discordUserId,
+      {
+        series: seriesName,
+        season: season,
+        episode: episode,
+      }
+    );
+
+    if (result.success) {
+      return `▶️ Now playing: **${seriesName}** S${season.toString().padStart(2, "0")}E${episode.toString().padStart(2, "0")}`;
+    } else {
+      return `❌ Failed to play episode: ${result.error || "Unknown error"}`;
+    }
+  } catch (err: any) {
+    return `❌ Error playing episode: ${err.message}`;
+  }
+}
+
+// Handle open folder action
+async function handleOpenAction(
+  env: Env,
+  seriesName: string,
+  season: number | undefined,
+  discordUserId?: string
+): Promise<string> {
+  try {
+    const body: any = { series: seriesName };
+    if (season !== undefined) {
+      body.season = season;
+    }
+
+    const result = await callMediaAPI(
+      env,
+      "/api/media/open",
+      "POST",
+      discordUserId,
+      body
+    );
+
+    if (result.success) {
+      const location = season ? `Season ${season}` : "series folder";
+      return `📁 Opened **${seriesName}** ${location} in Explorer`;
+    } else {
+      return `❌ Failed to open folder: ${result.error || "Unknown error"}`;
+    }
+  } catch (err: any) {
+    return `❌ Error opening folder: ${err.message}`;
+  }
+}
+
+// Parse user intent with LLM
+async function parseMediaIntent(
+  ai: Ai,
+  openRouterKey: string,
+  userQuery: string,
+  availableSeries: string[]
+): Promise<{
+  action: string;
+  query?: string;
+  series_name?: string;
+  season?: number;
+  episode?: number
+}> {
+  const systemPrompt = `You are a media library query parser. Parse user queries and return JSON with:
+{
+  "action": "list_all" | "search" | "info" | "count" | "play" | "open",
+  "query": "search term if action is search",
+  "series_name": "exact series name if action is info/play/open",
+  "season": number (for play/open actions),
+  "episode": number (for play action only)
+}
+
+Available series: ${availableSeries.join(", ")}
+
+Examples:
+"show me everything" -> {"action": "list_all"}
+"search for friends" -> {"action": "search", "query": "friends"}
+"tell me about breaking bad" -> {"action": "info", "series_name": "Breaking Bad"}
+"how many shows do I have" -> {"action": "count"}
+"play breaking bad s01e01" -> {"action": "play", "series_name": "Breaking Bad", "season": 1, "episode": 1}
+"play friends season 2 episode 5" -> {"action": "play", "series_name": "Friends", "season": 2, "episode": 5}
+"open breaking bad season 1" -> {"action": "open", "series_name": "Breaking Bad", "season": 1}
+"open friends folder" -> {"action": "open", "series_name": "Friends"}
+
+Return ONLY valid JSON, no explanation.`;
+
+  try {
+    const response = await callLLM(
+      ai,
+      openRouterKey,
+      systemPrompt,
+      userQuery,
+      250
+    );
+
+    // Extract JSON from response
+    const jsonMatch = response?.match(/\{[\s\S]*\}/);
+    if (jsonMatch) {
+      return JSON.parse(jsonMatch[0]);
+    }
+
+    // Fallback: simple keyword matching with regex
+    const queryLower = userQuery.toLowerCase();
+
+    // Check for play command
+    if (queryLower.includes("play")) {
+      const episodeMatch = userQuery.match(/s(\d+)e(\d+)/i) ||
+                          userQuery.match(/season (\d+) episode (\d+)/i);
+      if (episodeMatch) {
+        const season = parseInt(episodeMatch[1]);
+        const episode = parseInt(episodeMatch[2]);
+        // Extract series name (everything before s01e01 or "season")
+        const seriesMatch = userQuery.match(/play (.+?) (?:s\d+e\d+|season \d+)/i);
+        const seriesName = seriesMatch ? seriesMatch[1].trim() : "";
+        return { action: "play", series_name: seriesName, season, episode };
+      }
+    }
+
+    // Check for open command
+    if (queryLower.includes("open")) {
+      const seasonMatch = userQuery.match(/season (\d+)/i);
+      const season = seasonMatch ? parseInt(seasonMatch[1]) : undefined;
+      // Extract series name (everything after "open" and before "season" or "folder")
+      const seriesMatch = userQuery.match(/open (.+?)(?: season \d+| folder)?$/i);
+      const seriesName = seriesMatch ? seriesMatch[1].trim() : "";
+      return { action: "open", series_name: seriesName, season };
+    }
+
+    if (queryLower.includes("all") || queryLower.includes("everything") || queryLower.includes("list")) {
+      return { action: "list_all" };
+    }
+    if (queryLower.includes("search") || queryLower.includes("find")) {
+      const words = userQuery.split(" ");
+      const searchIndex = words.findIndex(w => w.toLowerCase() === "search" || w.toLowerCase() === "find");
+      const query = words.slice(searchIndex + 1).join(" ");
+      return { action: "search", query };
+    }
+    if (queryLower.includes("how many") || queryLower.includes("count")) {
+      return { action: "count" };
+    }
+
+    // Default to search
+    return { action: "search", query: userQuery };
+  } catch (err) {
+    // Fallback to search on error
+    return { action: "search", query: userQuery };
+  }
+}
+
+// Format all series as a list
+function formatAllSeries(tvSeries: any): string {
+  const seriesList = Object.entries(tvSeries)
+    .map(([name, info]: [string, any]) => {
+      return `**${name}**\n└─ ${info.total_seasons} seasons, ${info.total_episodes} episodes`;
+    })
+    .join("\n\n");
+
+  if (!seriesList) {
+    return "📺 No TV series found in your library.";
+  }
+
+  return `📺 **Your TV Library**\n\n${seriesList}`;
+}
+
+// Format library statistics
+function formatLibraryStats(mediaData: any): string {
+  const tvCount = mediaData.counts?.tv_series || 0;
+  const moviesCount = mediaData.counts?.movies || 0;
+
+  const totalEpisodes = Object.values(mediaData.tv_series || {}).reduce(
+    (sum: number, series: any) => sum + (series.total_episodes || 0),
+    0
+  );
+
+  const lastUpdated = mediaData.last_updated || "Unknown";
+
+  return `📊 **Library Statistics**
+
+**TV Series:** ${tvCount}
+**Total Episodes:** ${totalEpisodes}
+**Movies:** ${moviesCount}
+
+Last updated: ${lastUpdated}`;
 }
