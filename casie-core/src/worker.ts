@@ -240,6 +240,30 @@ export default {
 
     return new Response("unhandled interaction type", { status: 400 });
   },
+
+  // Scheduled handler for cron triggers
+  async scheduled(event: ScheduledEvent, env: Env, ctx: ExecutionContext): Promise<void> {
+    // Send daily weather update at 7 AM EST (11 AM UTC)
+    try {
+      // Create a request object with authorization header to reuse existing handleCronWeather function
+      const request = new Request("https://casie-core.apoorv-umredkar.workers.dev/cron/weather", {
+        method: "GET",
+        headers: {
+          "Authorization": `Bearer ${env.CRON_SECRET_TOKEN}`
+        }
+      });
+
+      const response = await handleCronWeather(request, env);
+
+      if (response.status === 200) {
+        console.log("✅ Scheduled weather update sent successfully");
+      } else {
+        console.error(`❌ Scheduled weather update failed with status ${response.status}`);
+      }
+    } catch (error) {
+      console.error("❌ Error in scheduled weather update:", error);
+    }
+  },
 };
 
 // ========== COMMAND HANDLERS ==========
