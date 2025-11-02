@@ -690,7 +690,8 @@ async function callLLM(
   openRouterKey: string,
   systemPrompt: string,
   userPrompt: string,
-  maxTokens: number = 800
+  maxTokens: number = 800,
+  temperature: number = DEFAULT_TEMPERATURE
 ): Promise<string | null> {
   try {
     // Try Cloudflare AI first
@@ -715,7 +716,7 @@ async function callLLM(
   }
 
   // Fallback to OpenRouter
-  return await callOpenRouterFallback(openRouterKey, systemPrompt, userPrompt, maxTokens);
+  return await callOpenRouterFallback(openRouterKey, systemPrompt, userPrompt, maxTokens, temperature);
 }
 
 /**
@@ -725,7 +726,8 @@ async function callOpenRouterFallback(
   apiKey: string,
   systemPrompt: string,
   userPrompt: string,
-  maxTokens: number = 800
+  maxTokens: number = 800,
+  temperature: number = DEFAULT_TEMPERATURE
 ): Promise<string | null> {
   try {
     const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
@@ -742,7 +744,7 @@ async function callOpenRouterFallback(
           { role: "system", content: systemPrompt.trim() },
           { role: "user", content: userPrompt.trim() },
         ],
-        temperature: DEFAULT_TEMPERATURE,
+        temperature: temperature,
         max_tokens: maxTokens,
       }),
     });
@@ -1062,7 +1064,8 @@ Please answer the user's query based on the library data above.`;
     openRouterKey,
     systemPrompt,
     userPrompt,
-    500
+    500,
+    0.2 // Lower temperature for more factual, consistent responses
   );
 
   return response || "I couldn't process your query. Please try again.";
