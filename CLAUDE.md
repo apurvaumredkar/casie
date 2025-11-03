@@ -36,9 +36,10 @@ CASIE Platform
 │   ├── /ask                    # Direct LLM chat
 │   ├── /web-search             # Web search + AI summarization
 │   ├── /weather [location]     # Weather info (defaults to Buffalo NY)
-│   ├── /files <query>          # Query local media library with natural language
+│   ├── /videos <query>         # **NEW** Unified command: browse library OR open episodes
+│   ├── /files <query>          # [DEPRECATED] Query local media library (use /videos instead)
 │   ├── /location               # Get current location (via CASIE Bridge)
-│   ├── /open <query>           # LLM parse + D1 lookup + open matching episode
+│   ├── /open <query>           # [DEPRECATED] Open episode (use /videos instead)
 │   ├── /lock-pc                # Lock Windows PC with confirmation (requires CASIE Bridge)
 │   ├── /clear                  # Bulk delete channel messages
 │   └── /cron/weather           # Scheduled weather updates (GitHub Actions)
@@ -96,7 +97,33 @@ CASIE Platform
    - Returns AI-summarized weather with contextual advice
    - Examples: `/weather Tokyo`, `/weather` (defaults to Buffalo)
 
-4. **`/clear`** - Bulk delete channel messages
+4. **`/videos <query>`** - **UNIFIED** TV library browsing and playback
+   - **NEW**: Combines functionality of `/files` and `/open` into one intelligent command
+   - Uses LLM with full library context to determine user intent
+   - **Browse Mode**: Query, search, and list your TV show library
+   - **Open Mode**: Parse episode references and open videos
+   - Architecture: Fetch videos.md → LLM classification → Route to browse OR open
+   - Examples:
+     - Browse: `/videos what shows do you have?`
+     - Browse: `/videos search for friends`
+     - Browse: `/videos how many episodes of brooklyn nine nine?`
+     - Open: `/videos open brooklyn nine nine s01e01`
+     - Open: `/videos play friends season 2 episode 5`
+     - Hybrid: `/videos friends` → LLM suggests available episodes
+
+5. **`/files <query>`** - [DEPRECATED] Query local media library
+   - Use `/videos` instead for unified experience
+   - Still functional for backward compatibility
+   - Returns AI-summarized information about TV shows
+   - Examples: `/files list all shows`, `/files search for friends`
+
+6. **`/open <query>`** - [DEPRECATED] Open specific episode
+   - Use `/videos` instead for unified experience
+   - Still functional for backward compatibility
+   - Parses query → D1 lookup → Opens file
+   - Examples: `/open brooklyn nine nine season 1 episode 1`
+
+7. **`/clear`** - Bulk delete channel messages
    - Requires "Manage Messages" permission
    - Deletes up to 100 messages less than 14 days old (Discord limitation)
    - Completely silent operation (no confirmation message)
@@ -180,10 +207,50 @@ This pattern is implemented in:
   - `handleAskDeferred()` - Processes `/ask` command asynchronously
   - `handleSearchDeferred()` - Processes `/web-search` command asynchronously
   - `handleWeatherDeferred()` - Processes `/weather` command asynchronously
+  - `handleVideosDeferred()` - Processes unified `/videos` command asynchronously
   - `sendFollowup()` - Sends the actual response via webhook
 - **Spotify Bot**:
   - `handleSpotifyNL()` - Processes `/spotify` command asynchronously
   - `editOriginalMessage()` - Updates the deferred response
+
+### Unified Videos Command Architecture
+
+**Problem**: Previously had two separate commands with different use cases:
+- `/files` - Browse library (read-only, conversational)
+- `/open` - Open specific episode (action-based, structured parsing)
+
+**Solution**: Single `/videos` command that intelligently routes based on user intent using LLM.
+
+**Flow**:
+```
+User: "/videos search for friends"
+    ↓
+1. Fetch videos.md from CASIE Bridge (library index)
+2. Call unified LLM with full library context
+    System Prompt: "You are a library assistant with playback capabilities"
+    Context: Full videos.md content embedded
+    Response Format: JSON with mode + data
+3. LLM classifies intent and responds:
+    {"mode": "browse", "response": "**Friends** is in your library..."}
+    OR
+    {"mode": "open", "action": {"series": "Friends", "season": 1, "episode": 1}}
+4. Route based on mode:
+    - Browse → Send LLM response directly
+    - Open → Query D1 → Call Bridge /open → Confirm
+```
+
+**Key Design Decisions**:
+- **Single LLM call** (not separate intent classifier) - lower latency
+- **Full library context** - enables intelligent suggestions and validation
+- **Temperature: 0.2** - balanced for both classification and conversation
+- **Max tokens: 600** - enough for browse responses + JSON structure
+- **Backward compatibility** - `/files` and `/open` still work (deprecated)
+
+**Benefits**:
+- Natural user experience (no need to know which command to use)
+- Contextual suggestions (LLM sees what's actually available)
+- Fewer commands to remember
+- Extensible (easy to add new modes like "queue", "recommend", etc.)
 
 ### Security
 
@@ -369,10 +436,12 @@ gh secret set WEATHER_CRON_SECRET
 **Core Bot**:
 To add a new Discord slash command:
 1. Register the command in Discord Developer Portal
-2. Add case in the switch statement in [casie-core/src/worker.ts:125-147](casie-core/src/worker.ts#L125-L147)
+2. Add case in the switch statement in [casie-core/src/worker.ts](casie-core/src/worker.ts) (around line 137-175)
 3. Create a deferred handler function (e.g., `handleNewCommandDeferred`)
 4. Use `ctx.waitUntil()` to process asynchronously
 5. Call `sendFollowup()` to send the response
+
+**Example**: See `handleVideosDeferred()` for a unified command that intelligently routes between multiple behaviors based on LLM classification.
 
 **Spotify Bot**:
 To add a new Spotify command:
@@ -553,20 +622,18 @@ casie-bridge/
 ├── location.json           # Cached location data (gitignored)
 ├── requirements.txt        # Python dependencies
 ├── .env                    # Environment config (contains secrets)
-├── start_fastapi.ps1       # FastAPI launcher
-├── start_tunnel.ps1        # Tunnel launcher with KV upload
-├── start_casie.ps1         # Combined startup script
-├── stop_casie.ps1          # Stop all services
+├── casie.ps1               # Main service control script
 ├── setup_autostart.ps1     # Configure Task Scheduler
+├── setup_api_token.ps1     # Generate and configure API token
 └── tunnel.log              # Cloudflare tunnel output
 ```
 
 **PowerShell Management Scripts**:
-- `start_casie.ps1` - Starts both FastAPI and Cloudflare Tunnel
-- `stop_casie.ps1` - Kills all running casie-bridge processes
-- `start_fastapi.ps1` - Starts only the FastAPI server
-- `start_tunnel.ps1` - Starts tunnel and uploads URL to KV
+- `casie.ps1` - Unified service manager for FastAPI and Cloudflare Tunnel
+  - Usage: `casie.ps1 -Action [start|stop|restart|status] [-Service all|api|tunnel]`
+  - Examples: `casie.ps1 -Action start`, `casie.ps1 -Action stop -Service api`
 - `setup_autostart.ps1` - Configures Windows Task Scheduler for auto-start
+- `setup_api_token.ps1` - Generates secure API token and updates .env file
 
 **TV Show Indexing & D1 Database**:
 The `videos.py` script is a unified tool that handles both markdown generation and Cloudflare D1 database population:
@@ -663,17 +730,6 @@ const response = await fetch(`${tunnelUrl}/videos`, {
 });
 ```
 
-
-8. **`/lock-pc`** - Lock Windows PC with confirmation
-   - Requires CASIE Bridge to be running
-   - Shows interactive confirmation dialog with Yes/No buttons
-   - Access restricted to authorized Discord user ID (`YOUR_DISCORD_ID` env var)
-   - Uses Windows `LockWorkStation` API via rundll32
-   - Equivalent to pressing Win+L
-   - Red "Yes, Lock PC" button for confirmation
-   - Gray "Cancel" button to abort
-   - Immediate response with no deferral for button display
-
 6. **`POST /lock`** - Lock Windows PC
    - Locks the workstation using `rundll32.exe user32.dll,LockWorkStation`
    - Programmatic equivalent of pressing Win+L
@@ -681,4 +737,12 @@ const response = await fetch(`${tunnelUrl}/videos`, {
    - Returns: `{"ok": true, "message": "PC locked successfully"}`
    - Used by `/lock-pc` Discord command
    - Requires authentication
+
+**Discord Command: `/lock-pc`**
+   - Requires CASIE Bridge to be running
+   - Shows interactive confirmation dialog with Yes/No buttons
+   - Access restricted to authorized Discord user ID (set in env)
+   - Red "Yes, Lock PC" button for confirmation
+   - Gray "Cancel" button to abort
+   - Immediate response with no deferral for button display
 

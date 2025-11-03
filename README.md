@@ -35,14 +35,12 @@ A general-purpose AI assistant for conversations, web research, and weather upda
   - Examples: "Buffalo", "New York", "Tokyo"
 
 *Media Library:*
-- `/files <query>` - Query your local TV show library with natural language
-  - "list the available tv shows"
-  - "how many episodes of friends?"
-  - "search for game of thrones"
-- `/open <query>` - Search and open TV episodes with LLM parsing + D1 lookup
-  - "brooklyn nine nine season 1 episode 1"
-  - "friends s02e05"
-  - "the office 3x12"
+- `/videos <query>` - Unified TV library browser and episode player with natural language understanding
+  - **Browse mode**: "list the available tv shows", "how many episodes of friends?", "do we have breaking bad?"
+  - **Open mode**: "play friends s01e01", "open brooklyn nine nine season 1 episode 1", "play the office 3x12"
+  - Intelligently routes between browsing and playback using LLM classification
+- `/files <query>` - [DEPRECATED] Use `/videos` instead
+- `/open <query>` - [DEPRECATED] Use `/videos` instead
 
 *Utility:*
 - `/clear` - Clear all messages in the channel (requires manage messages permission)
@@ -483,9 +481,9 @@ CASIE Bridge includes a unified script that handles both markdown indexing AND C
 
 **How it works:**
 1. Scans your local TV directory for video files
-2. Generates `videos.md` with show/season/episode information (for `/files` command)
-3. Populates Cloudflare D1 database with episode metadata (for `/open` command)
-4. Uses LLM parsing to extract structured data from natural language queries
+2. Generates `videos.md` with show/season/episode information (for browse mode)
+3. Populates Cloudflare D1 database with episode metadata (for open mode)
+4. Uses LLM parsing to extract structured data and route between browse/open modes
 
 **Usage:**
 ```bash
@@ -520,11 +518,9 @@ casie-bridge/
 ├── location.json           # Cached geolocation data (gitignored)
 ├── requirements.txt        # Python dependencies
 ├── .env                    # Environment config (contains secrets)
-├── start_fastapi.ps1       # FastAPI launcher
-├── start_tunnel.ps1        # Tunnel launcher with KV upload
-├── start_casie.ps1         # Combined startup script
-├── stop_casie.ps1          # Stop all services
+├── casie.ps1               # Unified service manager (start/stop/restart/status)
 ├── setup_autostart.ps1     # Configure Task Scheduler
+├── setup_api_token.ps1     # Generate and configure API token
 └── tunnel.log              # Cloudflare tunnel output
 ```
 
@@ -532,17 +528,37 @@ casie-bridge/
 
 **Start Services**:
 ```powershell
-powershell -ExecutionPolicy Bypass -File D:\casie\casie-bridge\start_casie.ps1
+# Start all services
+.\casie-bridge\casie.ps1 -Action start
+
+# Start only FastAPI
+.\casie-bridge\casie.ps1 -Action start -Service api
+
+# Start only tunnel
+.\casie-bridge\casie.ps1 -Action start -Service tunnel
 ```
 
 **Stop Services**:
 ```powershell
-D:\casie\casie-bridge\stop_casie.ps1
+# Stop all services
+.\casie-bridge\casie.ps1 -Action stop
+
+# Stop specific service
+.\casie-bridge\casie.ps1 -Action stop -Service api
 ```
 
 **Check Status**:
 ```powershell
+# Check service status
+.\casie-bridge\casie.ps1 -Action status
+
+# Or check processes manually
 Get-Process -Name "python","cloudflared"
+```
+
+**Restart Services**:
+```powershell
+.\casie-bridge\casie.ps1 -Action restart
 ```
 
 ### Security
@@ -574,7 +590,7 @@ CASIE Bridge is configured to start automatically when you log into Windows via 
 - Name: "CASIE Bridge"
 - Trigger: User logon
 - Privileges: Highest (Administrator)
-- Script: `D:\casie\casie-bridge\start_casie.ps1`
+- Script: `casie.ps1 -Action start`
 
 **Manage Autostart**:
 ```powershell
@@ -585,7 +601,7 @@ Get-ScheduledTask -TaskName "CASIE Bridge"
 Unregister-ScheduledTask -TaskName "CASIE Bridge" -Confirm:$false
 
 # Re-enable
-powershell -ExecutionPolicy Bypass -File casie-bridge\setup_autostart.ps1
+.\casie-bridge\setup_autostart.ps1
 ```
 
 ### Configuration
@@ -613,7 +629,7 @@ Then update in `.env` and restart services.
 Stop-Process -Name "python","cloudflared" -Force
 
 # Restart
-D:\casie\casie-bridge\start_casie.ps1
+.\casie-bridge\casie.ps1 -Action restart
 ```
 
 **Tunnel URL Not in KV**:

@@ -159,6 +159,10 @@ export default {
           // Defer response and process in background
           ctx.waitUntil(handleOpenDeferred(interaction, env));
           return json({ type: DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE });
+        case "videos":
+          // Unified videos command - browse and open
+          ctx.waitUntil(handleVideosDeferred(interaction, env));
+          return json({ type: DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE });
         case "pc-lock":
           // Show confirmation prompt (no deferral needed - immediate response)
           return handlePCLockCommand(interaction, env);
@@ -747,101 +751,25 @@ async function bulkDeleteMessages(
 
 // ========== FILES COMMAND HANDLER ==========
 
+// Deprecated: Use handleVideosDeferred() instead
 async function handleFilesDeferred(
   interaction: DiscordInteraction,
   env: Env
 ): Promise<void> {
-  try {
-    // Get user query (natural language)
-    const userQuery =
-      interaction.data?.options?.[0]?.value?.trim() ||
-      "list the available tv shows";
-
-    // Fetch tunnel URL from KV
-    const tunnelUrl = await env.CASIE_BRIDGE_KV.get("current_tunnel_url");
-    if (!tunnelUrl) {
-      await sendFollowup(
-        interaction,
-        "📁 CASIE Bridge is not running. Please start the local server and tunnel."
-      );
-      return;
-    }
-
-    // Fetch videos data from tunnel
-    const videosResponse = await fetch(`${tunnelUrl}/videos`, {
-      headers: {
-        "Authorization": `Bearer ${env.CASIE_BRIDGE_API_TOKEN}`,
-      },
-    });
-
-    if (!videosResponse.ok) {
-      await sendFollowup(
-        interaction,
-        `📁 Failed to connect to CASIE Bridge: ${videosResponse.status} ${videosResponse.statusText}`
-      );
-      return;
-    }
-
-    const videosData = await videosResponse.json();
-    const videosContent = videosData.content;
-
-    // Parse user intent with LLM
-    const response = await parseFilesQuery(
-      env.AI,
-      env.OPENROUTER_API_KEY,
-      userQuery,
-      videosContent
-    );
-
-    await sendFollowup(interaction, response);
-  } catch (err: any) {
-    await sendFollowup(
-      interaction,
-      `❌ Error querying files: ${err.message}`
-    );
-  }
+  await sendFollowup(
+    interaction,
+    "⚠️ The `/files` command is deprecated. Please use `/videos` instead for a unified browsing and playback experience.\n\nExample: `/videos what shows do you have?`"
+  );
 }
 
-// Parse user query and respond based on videos.md content
+// Deprecated: Use parseUnifiedVideosQuery() instead
 async function parseFilesQuery(
   ai: Ai,
   openRouterKey: string,
   userQuery: string,
   videosContent: string
 ): Promise<string> {
-  const systemPrompt = `You are a TV show library assistant. You have access to the user's TV show library index.
-
-Your task is to answer user queries about their TV show collection.
-
-INSTRUCTIONS:
-- Answer questions directly and concisely
-- For "list" queries: List all shows with season/episode counts
-- For "search" queries: Find matching shows and provide their details
-- For "how many" queries: Count and report the numbers
-- For specific show queries: Provide detailed season/episode breakdown
-- Keep responses under 150 words unless listing many shows
-- Use friendly, conversational tone
-- Format with markdown for readability
-
-If the user asks about a show not in the library, politely inform them it's not available.`;
-
-  const userPrompt = `User Query: "${userQuery}"
-
-TV Show Library:
-${videosContent}
-
-Please answer the user's query based on the library data above.`;
-
-  const response = await callLLM(
-    ai,
-    openRouterKey,
-    systemPrompt,
-    userPrompt,
-    500,
-    0.2 // Lower temperature for more factual, consistent responses
-  );
-
-  return response || "I couldn't process your query. Please try again.";
+  return "This function is deprecated. Use /videos command instead.";
 }
 
 // ========== D1 DATABASE HELPERS ==========
@@ -965,122 +893,293 @@ async function queryEpisodeFromD1(
 
 // ========== OPEN COMMAND HANDLER ==========
 
+// Deprecated: Use handleVideosDeferred() instead
 async function handleOpenDeferred(
+  interaction: DiscordInteraction,
+  env: Env
+): Promise<void> {
+  await sendFollowup(
+    interaction,
+    "⚠️ The `/open` command is deprecated. Please use `/videos` instead for a unified browsing and playback experience.\n\nExample: `/videos play friends s01e01`"
+  );
+}
+
+// ========== UNIFIED VIDEOS COMMAND HANDLER ==========
+
+/**
+ * Unified /videos command that handles both browsing and opening
+ * Uses LLM with full library context to intelligently route between modes
+ */
+async function handleVideosDeferred(
   interaction: DiscordInteraction,
   env: Env
 ): Promise<void> {
   const startTime = Date.now();
   try {
-    console.log(`[handleOpenDeferred] Starting /open command`);
+    console.log(`[handleVideosDeferred] Starting /videos command`);
 
-    // Get user query (natural language search for episode)
-    const userQuery = interaction.data?.options?.[0]?.value?.trim();
+    // Get user query
+    const userQuery =
+      interaction.data?.options?.[0]?.value?.trim() ||
+      "list the available tv shows";
 
-    if (!userQuery) {
-      console.log(`[handleOpenDeferred] No query provided`);
-      await sendFollowup(
-        interaction,
-        "❌ Please provide a search query (e.g., \"Brooklyn Nine Nine season 1 episode 1\")"
-      );
-      return;
-    }
-
-    console.log(`[handleOpenDeferred] Query: "${userQuery}"`);
-
-    // Parse query with LLM to extract series, season, episode
-    console.log(`[handleOpenDeferred] Parsing query with LLM...`);
-    const parseStartTime = Date.now();
-    const parsed = await parseEpisodeQuery(userQuery, env);
-    console.log(`[handleOpenDeferred] Query parsed in ${Date.now() - parseStartTime}ms`);
-
-    if (!parsed) {
-      console.log(`[handleOpenDeferred] Could not parse query: "${userQuery}"`);
-      await sendFollowup(
-        interaction,
-        `❌ Could not understand query. Please use format like:\n` +
-        `- "Brooklyn Nine Nine season 1 episode 1"\n` +
-        `- "Friends S02E05"\n` +
-        `- "The Office 3x12"`
-      );
-      return;
-    }
-
-    console.log(`[handleOpenDeferred] Parsed: ${parsed.series} S${parsed.season}E${parsed.episode}`);
-
-    // Query D1 database for exact match
-    console.log(`[handleOpenDeferred] Querying D1...`);
-    const d1StartTime = Date.now();
-    const episode = await queryEpisodeFromD1(parsed.series, parsed.season, parsed.episode, env);
-    console.log(`[handleOpenDeferred] D1 query completed in ${Date.now() - d1StartTime}ms`);
-
-    if (!episode) {
-      console.log(`[handleOpenDeferred] No episode found for: ${parsed.series} S${parsed.season}E${parsed.episode}`);
-      await sendFollowup(
-        interaction,
-        `❌ Episode not found: **${parsed.series}** S${String(parsed.season).padStart(2, '0')}E${String(parsed.episode).padStart(2, '0')}`
-      );
-      return;
-    }
-
-    console.log(`[handleOpenDeferred] Found episode: ${episode.series} S${episode.season}E${episode.episode}`);
+    console.log(`[handleVideosDeferred] Query: "${userQuery}"`);
 
     // Fetch tunnel URL from KV
-    console.log(`[handleOpenDeferred] Fetching tunnel URL from KV...`);
     const tunnelUrl = await env.CASIE_BRIDGE_KV.get("current_tunnel_url");
     if (!tunnelUrl) {
-      console.log(`[handleOpenDeferred] Tunnel URL not found in KV`);
+      console.log(`[handleVideosDeferred] Tunnel URL not found in KV`);
       await sendFollowup(
         interaction,
         "📁 CASIE Bridge is not running. Please start the local server and tunnel."
       );
       return;
     }
-    console.log(`[handleOpenDeferred] Tunnel URL: ${tunnelUrl}`);
 
-    // Call the CASIE Bridge /open endpoint
-    console.log(`[handleOpenDeferred] Calling /open endpoint with path: ${episode.filepath}`);
-    const openStartTime = Date.now();
-    const openResponse = await fetch(`${tunnelUrl}/open`, {
-      method: "POST",
+    // Fetch videos data from CASIE Bridge
+    console.log(`[handleVideosDeferred] Fetching videos.md from Bridge...`);
+    const videosResponse = await fetch(`${tunnelUrl}/videos`, {
       headers: {
         "Authorization": `Bearer ${env.CASIE_BRIDGE_API_TOKEN}`,
-        "Content-Type": "application/json",
       },
-      body: JSON.stringify({ path: episode.filepath }),
     });
-    console.log(`[handleOpenDeferred] /open endpoint responded in ${Date.now() - openStartTime}ms with status ${openResponse.status}`);
 
-    if (!openResponse.ok) {
-      const errorData = await openResponse.json().catch(() => ({}));
-      console.error(`[handleOpenDeferred] /open failed: ${openResponse.status} ${JSON.stringify(errorData)}`);
+    if (!videosResponse.ok) {
+      console.error(`[handleVideosDeferred] Bridge /videos failed: ${videosResponse.status}`);
       await sendFollowup(
         interaction,
-        `❌ Failed to open file: ${errorData.detail || openResponse.statusText}`
+        `📁 Failed to connect to CASIE Bridge: ${videosResponse.status} ${videosResponse.statusText}`
       );
       return;
     }
 
-    // Format the match info nicely
-    const matchInfo = `**${episode.series}** S${String(episode.season).padStart(2, '0')}E${String(episode.episode).padStart(2, '0')}`;
+    const videosData = await videosResponse.json();
+    const videosContent = videosData.content;
+    console.log(`[handleVideosDeferred] Fetched library (${videosContent.length} chars)`);
 
-    console.log(`[handleOpenDeferred] Sending success followup...`);
-    const followupStartTime = Date.now();
-    await sendFollowup(
-      interaction,
-      `🎯 Opening: ${matchInfo}`
+    // Call unified LLM to determine intent and respond
+    console.log(`[handleVideosDeferred] Calling unified LLM...`);
+    const llmStartTime = Date.now();
+    const llmResponse = await parseUnifiedVideosQuery(
+      env.AI,
+      env.OPENROUTER_API_KEY,
+      userQuery,
+      videosContent
     );
-    console.log(`[handleOpenDeferred] Success followup sent in ${Date.now() - followupStartTime}ms`);
-    console.log(`[handleOpenDeferred] Total execution time: ${Date.now() - startTime}ms`);
+    console.log(`[handleVideosDeferred] LLM responded in ${Date.now() - llmStartTime}ms`);
+
+    if (!llmResponse) {
+      console.error(`[handleVideosDeferred] LLM returned empty response`);
+      await sendFollowup(
+        interaction,
+        "❌ I couldn't process your query. The AI response was invalid. Please try rephrasing your request or try the old commands: `/files` for browsing or `/open` for playing episodes."
+      );
+      return;
+    }
+
+    console.log(`[handleVideosDeferred] Mode: ${llmResponse.mode}`);
+
+    // Route based on mode
+    if (llmResponse.mode === "browse") {
+      // Browse mode: Send conversational response
+      console.log(`[handleVideosDeferred] Browse mode - sending response`);
+      await sendFollowup(interaction, llmResponse.response || "No results found.");
+      console.log(`[handleVideosDeferred] Total time: ${Date.now() - startTime}ms`);
+    } else if (llmResponse.mode === "open" && llmResponse.action) {
+      // Open mode: Query D1 and open file
+      console.log(`[handleVideosDeferred] Open mode - ${llmResponse.action.series} S${llmResponse.action.season}E${llmResponse.action.episode}`);
+
+      // Query D1 database for exact match
+      const d1StartTime = Date.now();
+      const episode = await queryEpisodeFromD1(
+        llmResponse.action.series,
+        llmResponse.action.season,
+        llmResponse.action.episode,
+        env
+      );
+      console.log(`[handleVideosDeferred] D1 query completed in ${Date.now() - d1StartTime}ms`);
+
+      if (!episode) {
+        console.log(`[handleVideosDeferred] Episode not found in D1`);
+        await sendFollowup(
+          interaction,
+          `❌ Episode not found: **${llmResponse.action.series}** S${String(llmResponse.action.season).padStart(2, '0')}E${String(llmResponse.action.episode).padStart(2, '0')}\n\nUse \`/videos search for ${llmResponse.action.series}\` to see available episodes.`
+        );
+        return;
+      }
+
+      console.log(`[handleVideosDeferred] Found episode: ${episode.filepath}`);
+
+      // Call CASIE Bridge /open endpoint
+      const openStartTime = Date.now();
+      const openResponse = await fetch(`${tunnelUrl}/open`, {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${env.CASIE_BRIDGE_API_TOKEN}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ path: episode.filepath }),
+      });
+      console.log(`[handleVideosDeferred] /open responded in ${Date.now() - openStartTime}ms with status ${openResponse.status}`);
+
+      if (!openResponse.ok) {
+        const errorData = await openResponse.json().catch(() => ({}));
+        console.error(`[handleVideosDeferred] /open failed: ${JSON.stringify(errorData)}`);
+        await sendFollowup(
+          interaction,
+          `❌ Failed to open file: ${errorData.detail || openResponse.statusText}`
+        );
+        return;
+      }
+
+      // Send success message
+      const matchInfo = `**${episode.series}** S${String(episode.season).padStart(2, '0')}E${String(episode.episode).padStart(2, '0')}`;
+      await sendFollowup(interaction, `🎯 Opening: ${matchInfo}`);
+      console.log(`[handleVideosDeferred] Total time: ${Date.now() - startTime}ms`);
+    } else {
+      console.error(`[handleVideosDeferred] Invalid response from LLM: ${JSON.stringify(llmResponse)}`);
+      await sendFollowup(
+        interaction,
+        "❌ I couldn't understand your request. Please try again."
+      );
+    }
   } catch (err: any) {
-    console.error(`[handleOpenDeferred] Error after ${Date.now() - startTime}ms:`, err);
+    console.error(`[handleVideosDeferred] Error after ${Date.now() - startTime}ms:`, err);
     try {
       await sendFollowup(
         interaction,
-        `❌ Error opening file: ${err.message}`
+        `❌ Error processing request: ${err.message}`
       );
     } catch (followupErr: any) {
-      console.error(`[handleOpenDeferred] Failed to send error followup:`, followupErr);
+      console.error(`[handleVideosDeferred] Failed to send error followup:`, followupErr);
     }
+  }
+}
+
+/**
+ * Parse user query with unified LLM that has full library context
+ * Returns mode ("browse" or "open") with appropriate data
+ */
+async function parseUnifiedVideosQuery(
+  ai: Ai,
+  openRouterKey: string,
+  userQuery: string,
+  videosContent: string
+): Promise<{
+  mode: "browse" | "open";
+  response?: string;
+  action?: { series: string; season: number; episode: number };
+} | null> {
+  const systemPrompt = `You are a TV show library assistant with playback capabilities. You have access to the user's complete TV show library.
+
+CAPABILITIES:
+1. BROWSE MODE: Answer questions about the library (what shows exist, episode counts, search queries)
+2. OPEN MODE: Parse specific episode references and prepare them for playback
+
+RESPONSE FORMAT (JSON only):
+For browse queries:
+{"mode": "browse", "response": "Your conversational answer here with markdown formatting"}
+
+For open/play queries:
+{"mode": "open", "action": {"series": "Show Name", "season": 1, "episode": 1}}
+
+INSTRUCTIONS:
+- If the user wants to browse, search, list, or query information → use BROWSE mode
+- If the user wants to open, play, watch, or start a specific episode → use OPEN mode
+- For BROWSE mode: Be conversational, friendly, and use markdown formatting. Keep under 200 words unless listing many shows.
+- For OPEN mode: Extract the exact series name, season, and episode number from the query
+- If the query is ambiguous, prefer BROWSE mode and provide helpful suggestions
+- Use proper capitalization for series names (e.g., "Brooklyn Nine-Nine" not "brooklyn nine nine")
+
+EXAMPLES:
+
+User: "what shows do you have?"
+Response: {"mode": "browse", "response": "Here are your available TV shows:\\n\\n- Brooklyn Nine-Nine (8 seasons, 152 episodes)\\n- Friends (10 seasons, 236 episodes)\\n..."}
+
+User: "search for friends"
+Response: {"mode": "browse", "response": "**Friends** is in your library with 10 seasons and 236 episodes total."}
+
+User: "open brooklyn nine nine season 1 episode 1"
+Response: {"mode": "open", "action": {"series": "Brooklyn Nine-Nine", "season": 1, "episode": 1}}
+
+User: "play friends s02e05"
+Response: {"mode": "open", "action": {"series": "Friends", "season": 2, "episode": 5}}
+
+User: "friends"
+Response: {"mode": "browse", "response": "**Friends** is available with 10 seasons. Which episode would you like to watch? For example: \\"/videos play friends s01e01\\""}`;
+
+  const userPrompt = `TV Show Library:
+${videosContent}
+
+User Query: "${userQuery}"
+
+Please respond in JSON format as specified above.`;
+
+  try {
+    console.log(`[parseUnifiedVideosQuery] Calling LLM with query: "${userQuery}"`);
+    console.log(`[parseUnifiedVideosQuery] Library content length: ${videosContent.length} chars`);
+
+    const response = await callLLM(
+      ai,
+      openRouterKey,
+      systemPrompt,
+      userPrompt,
+      600,
+      0.2 // Balanced temperature for both classification and conversation
+    );
+
+    if (!response) {
+      console.log(`[parseUnifiedVideosQuery] LLM returned empty response`);
+      return null;
+    }
+
+    console.log(`[parseUnifiedVideosQuery] LLM raw response: ${response.substring(0, 500)}...`);
+
+    // Extract JSON from response - need to handle nested objects properly
+    // Find the outermost JSON object by counting braces
+    let jsonStr = '';
+    let braceCount = 0;
+    let startIndex = response.indexOf('{');
+
+    if (startIndex === -1) {
+      console.log(`[parseUnifiedVideosQuery] No JSON found in response: ${response}`);
+      return null;
+    }
+
+    for (let i = startIndex; i < response.length; i++) {
+      const char = response[i];
+      jsonStr += char;
+
+      if (char === '{') braceCount++;
+      if (char === '}') braceCount--;
+
+      if (braceCount === 0) break;
+    }
+
+    console.log(`[parseUnifiedVideosQuery] Extracted JSON: ${jsonStr}`);
+    const parsed = JSON.parse(jsonStr);
+
+    // Validate response structure
+    if (!parsed.mode || !["browse", "open"].includes(parsed.mode)) {
+      console.log(`[parseUnifiedVideosQuery] Invalid mode: ${parsed.mode}`);
+      return null;
+    }
+
+    if (parsed.mode === "browse" && !parsed.response) {
+      console.log(`[parseUnifiedVideosQuery] Browse mode missing response`);
+      return null;
+    }
+
+    if (parsed.mode === "open" && (!parsed.action || !parsed.action.series || !parsed.action.season || !parsed.action.episode)) {
+      console.log(`[parseUnifiedVideosQuery] Open mode missing required action fields`);
+      return null;
+    }
+
+    console.log(`[parseUnifiedVideosQuery] Successfully parsed: mode=${parsed.mode}`);
+    return parsed;
+  } catch (error: any) {
+    console.error(`[parseUnifiedVideosQuery] Error: ${error.message}`);
+    return null;
   }
 }
 

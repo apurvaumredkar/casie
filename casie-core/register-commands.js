@@ -66,8 +66,21 @@ const commands = [
     dm_permission: false,
   },
   {
+    name: 'videos',
+    description: '🎬 Browse your TV library or open episodes with natural language',
+    dm_permission: false,
+    options: [
+      {
+        name: 'query',
+        description: 'Browse: "what shows?" | Open: "play friends s01e01" | Search: "search friends"',
+        type: 3, // STRING type
+        required: true,
+      },
+    ],
+  },
+  {
     name: 'files',
-    description: 'Query your local TV show library',
+    description: '[DEPRECATED] Query your local TV show library (use /videos instead)',
     dm_permission: false,
     options: [
       {
@@ -80,7 +93,7 @@ const commands = [
   },
   {
     name: 'open',
-    description: 'Search and open a TV show episode using natural language',
+    description: '[DEPRECATED] Open a TV show episode (use /videos instead)',
     dm_permission: false,
     options: [
       {
