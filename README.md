@@ -39,6 +39,10 @@ A general-purpose AI assistant for conversations, web research, and weather upda
   - "list the available tv shows"
   - "how many episodes of friends?"
   - "search for game of thrones"
+- `/open <query>` - Search and open TV episodes with LLM parsing + D1 lookup
+  - "brooklyn nine nine season 1 episode 1"
+  - "friends s02e05"
+  - "the office 3x12"
 
 *Utility:*
 - `/clear` - Clear all messages in the channel (requires manage messages permission)
@@ -161,10 +165,14 @@ Traditional Discord bots require always-on servers, complex infrastructure, and 
 - Automatic failover and redundancy
 
 **Persistent Storage:**
-- Cloudflare KV for user tokens and preferences
-- Eventually consistent key-value store
-- Globally distributed
-- Free tier: 100k reads/day, 1k writes/day
+- **Cloudflare KV** for user tokens, preferences, and tunnel URLs
+  - Eventually consistent key-value store
+  - Globally distributed
+  - Free tier: 100k reads/day, 1k writes/day
+- **Cloudflare D1** for structured episode data
+  - SQLite-based serverless database
+  - Fast exact lookups (~28ms)
+  - Free tier: 5M reads/month, 100k writes/month
 
 **Stateless OAuth:**
 - Cryptographically signed state parameters
@@ -464,37 +472,53 @@ curl -H "Authorization: Bearer YOUR_API_AUTH_TOKEN" <tunnel-url>
 
 - **`GET /`** - Health check endpoint
 - **`GET /health`** - Detailed health check
-- **`GET /videos`** - Get TV shows index from videos.md file
+- **`GET /videos`** - Get TV shows index from videos.md file (markdown)
+- **`GET /location`** - Get cached IP geolocation data (3-hour cache)
+- **`POST /open`** - Open local file with Windows default application
+- **`POST /lock`** - Lock Windows PC (equivalent to Win+L)
 
-### TV Show Indexing
+### TV Show Management (Unified Script)
 
-CASIE Bridge includes automatic TV show library indexing that scans your local media directory and generates a markdown index.
+CASIE Bridge includes a unified script that handles both markdown indexing AND Cloudflare D1 database population.
 
 **How it works:**
-1. Run `python videos.py` to scan your TV directory
-2. Generates `videos.md` with show/season/episode information
-3. Accessible via `/videos` endpoint
-4. Discord bot queries this data with `/files` command
+1. Scans your local TV directory for video files
+2. Generates `videos.md` with show/season/episode information (for `/files` command)
+3. Populates Cloudflare D1 database with episode metadata (for `/open` command)
+4. Uses LLM parsing to extract structured data from natural language queries
 
-**Regenerate Index:**
-```powershell
-cd D:\casie\casie-bridge
+**Usage:**
+```bash
+# Run both operations (default)
 python videos.py
+
+# Generate markdown only
+python videos.py --markdown-only
+
+# Populate D1 only
+python videos.py --d1-only
 ```
 
-**Configure TV Directory:**
-Edit `videos.py` line 145:
-```python
-tv_path = r"C:\path\to\your\TV"  # Change to your TV directory
+**Configure via .env:**
+```bash
+TV_DIRECTORY=C:\path\to\your\TV    # Path to TV directory
+D1_DATABASE_ID=your-database-id    # Cloudflare D1 database ID
 ```
+
+**Architecture:**
+- **Old approach**: Qdrant vector search with embeddings (~60ms+ queries)
+- **New approach**: LLM parsing + D1 SQL lookups (~28ms queries)
+- **Benefits**: Faster, more accurate, simpler architecture, no Docker needed
 
 ### Directory Structure
 
 ```
 casie-bridge/
 ├── main.py                 # FastAPI application
-├── videos.py               # TV show directory scanner
+├── videos.py               # Unified TV show management (markdown + D1)
 ├── videos.md               # Generated TV shows index (gitignored)
+├── location.json           # Cached geolocation data (gitignored)
+├── requirements.txt        # Python dependencies
 ├── .env                    # Environment config (contains secrets)
 ├── start_fastapi.ps1       # FastAPI launcher
 ├── start_tunnel.ps1        # Tunnel launcher with KV upload
@@ -612,7 +636,13 @@ cat casie-bridge\.env | Select-String "API_AUTH_TOKEN"
 - **Python 3.13+**: `winget install Python.Python.3.13`
 - **cloudflared**: `winget install Cloudflare.cloudflared`
 - **Node.js/npm**: For wrangler commands
-- **Python packages**: `pip install fastapi uvicorn requests`
+- **Python packages**: `pip install -r casie-bridge/requirements.txt`
+  - fastapi
+  - uvicorn[standard]
+  - httpx
+  - python-dotenv
+  - tqdm
+  - pydantic
 
 ### Integration with Discord Bots
 
