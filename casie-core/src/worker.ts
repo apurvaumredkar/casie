@@ -869,13 +869,13 @@ async function queryEpisodeFromD1(
   season: number,
   episode: number,
   env: Env
-): Promise<{ filepath: string; series: string; season: number; episode: number } | null> {
+): Promise<{ filepath: string; series: string; season: number; episode: number; episode_name: string | null } | null> {
   try {
     console.log(`[queryEpisodeFromD1] Querying: ${series} S${season}E${episode}`);
 
     // Query with LIKE for fuzzy series matching (case-insensitive)
     const result = await env.DB.prepare(
-      `SELECT series, season, episode, filepath
+      `SELECT series, season, episode, episode_name, filepath
        FROM episodes
        WHERE season = ?
          AND episode = ?
@@ -890,12 +890,13 @@ async function queryEpisodeFromD1(
       return null;
     }
 
-    console.log(`[queryEpisodeFromD1] Found match: ${result.series} S${result.season}E${result.episode}`);
+    console.log(`[queryEpisodeFromD1] Found match: ${result.series} S${result.season}E${result.episode}${result.episode_name ? ` - ${result.episode_name}` : ''}`);
     return {
       filepath: result.filepath as string,
       series: result.series as string,
       season: result.season as number,
       episode: result.episode as number,
+      episode_name: result.episode_name as string | null,
     };
   } catch (error: any) {
     console.error(`[queryEpisodeFromD1] Error: ${error.message}`);
@@ -1046,7 +1047,8 @@ async function handleVideosDeferred(
 
       // Send success message
       const matchInfo = `**${episode.series}** S${String(episode.season).padStart(2, '0')}E${String(episode.episode).padStart(2, '0')}`;
-      await sendFollowup(interaction, `🎯 Opening: ${matchInfo}`);
+      const episodeTitle = episode.episode_name ? `\nEpisode Title: *${episode.episode_name}*` : '';
+      await sendFollowup(interaction, `🎯 Opening: ${matchInfo}${episodeTitle}`);
       console.log(`[handleVideosDeferred] Total time: ${Date.now() - startTime}ms`);
     } else {
       console.error(`[handleVideosDeferred] Invalid response from LLM: ${JSON.stringify(llmResponse)}`);

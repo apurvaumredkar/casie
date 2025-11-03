@@ -4,6 +4,7 @@ CREATE TABLE IF NOT EXISTS episodes (
   series TEXT NOT NULL,
   season INTEGER NOT NULL,
   episode INTEGER NOT NULL,
+  episode_name TEXT,
   filepath TEXT NOT NULL,
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );

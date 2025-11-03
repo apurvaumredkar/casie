@@ -268,11 +268,12 @@ def populate_d1(episodes: list[dict], database_id: str):
         for ep in batch:
             # Escape single quotes in strings
             series = ep['series'].replace("'", "''")
+            episode_name = ep['title'].replace("'", "''")
             filepath = ep['filepath'].replace("'", "''")
-            values.append(f"('{series}', {ep['season']}, {ep['episode']}, '{filepath}')")
+            values.append(f"('{series}', {ep['season']}, {ep['episode']}, '{episode_name}', '{filepath}')")
 
         insert_sql = f"""
-        INSERT INTO episodes (series, season, episode, filepath)
+        INSERT INTO episodes (series, season, episode, episode_name, filepath)
         VALUES {', '.join(values)};
         """
 
