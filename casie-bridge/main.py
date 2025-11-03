@@ -14,15 +14,6 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
 import httpx
 
-# Qdrant and Ollama imports (optional dependencies)
-try:
-    from qdrant_client import QdrantClient
-    import ollama
-    QDRANT_AVAILABLE = True
-except ImportError:
-    QDRANT_AVAILABLE = False
-    print("Warning: qdrant-client or ollama not installed. Qdrant features disabled.")
-
 # Load environment variables
 env_path = Path(__file__).parent / ".env"
 if env_path.exists():
@@ -245,11 +236,6 @@ class OpenFileRequest(BaseModel):
     path: str
 
 
-class QueryVideosRequest(BaseModel):
-    query: str
-    limit: int = 10  # Number of results to return
-
-
 @app.post("/open")
 def open_file(request: OpenFileRequest, token: str = Security(verify_token)):
     """
@@ -382,78 +368,3 @@ def sleep_pc(token: str = Security(verify_token)):
         )
 
 
-@app.post("/query-videos")
-def query_videos(request: QueryVideosRequest, token: str = Security(verify_token)):
-    """
-    Semantic search over TV show episodes using Qdrant vector database.
-
-    Takes a natural language query and returns the most relevant episodes
-    using BGE-M3 embeddings for semantic matching.
-
-    Example queries:
-    - "Brooklyn Nine Nine season 1"
-    - "Friends finale"
-    - "Game of Thrones season 8"
-    """
-    if not QDRANT_AVAILABLE:
-        raise HTTPException(
-            status_code=status.HTTP_501_NOT_IMPLEMENTED,
-            detail="Qdrant/Ollama not available. Install dependencies: pip install qdrant-client ollama"
-        )
-
-    try:
-        # Initialize Qdrant client
-        client = QdrantClient(host="localhost", port=6333)
-
-        # Generate embedding for the query using BGE-M3
-        ollama_client = ollama.Client(host="http://localhost:11434")
-        response = ollama_client.embeddings(model='bge-m3', prompt=request.query)
-        query_vector = response['embedding']
-
-        if len(query_vector) != 1024:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Expected 1024-dim vector, got {len(query_vector)}"
-            )
-
-        # Search Qdrant for similar episodes
-        search_results = client.search(
-            collection_name="videos_index",
-            query_vector=query_vector,
-            limit=request.limit,
-            with_payload=True
-        )
-
-        # Format results
-        results = []
-        for hit in search_results:
-            payload = hit.payload
-            results.append({
-                "series": payload['series'],
-                "season": payload['season'],
-                "episode": payload['episode'],
-                "title": payload.get('title', ''),
-                "filepath": payload['filepath'],
-                "score": hit.score,
-                "content": payload.get('content', '')
-            })
-
-        return {
-            "ok": True,
-            "query": request.query,
-            "results": results,
-            "count": len(results)
-        }
-
-    except Exception as e:
-        # Check if it's a connection error
-        if "connection" in str(e).lower() or "refused" in str(e).lower():
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="Qdrant/Ollama services not available. Ensure Docker services are running: docker-compose up -d"
-            )
-
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error querying videos: {str(e)}"
-        )

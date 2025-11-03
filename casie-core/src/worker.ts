@@ -52,6 +52,7 @@ interface Env {
   OPENROUTER_API_KEY: string;
   BRAVE_API_KEY: string;
   AI: Ai; // Cloudflare AI binding
+  DB: D1Database; // D1 database binding for episodes
   CASIE_BRIDGE_KV: KVNamespace; // KV namespace for CASIE Bridge tunnel URL
   CASIE_BRIDGE_API_TOKEN: string; // Bearer token for CASIE Bridge authentication
   // Media server tunnel configuration
@@ -349,19 +350,60 @@ function json(data: DiscordResponse, init?: ResponseInit): Response {
 // ---- Discord followup message ----
 async function sendFollowup(
   interaction: DiscordInteraction,
-  content: string
+  content: string,
+  maxRetries: number = 3
 ): Promise<void> {
   const url = `https://discord.com/api/v10/webhooks/${interaction.application_id}/${interaction.token}`;
 
-  await fetch(url, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      content: content,
-    }),
-  });
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    try {
+      // Add exponential backoff delay for retries
+      if (attempt > 0) {
+        const delayMs = Math.min(1000 * Math.pow(2, attempt - 1), 5000); // Max 5 seconds
+        console.log(`[sendFollowup] Retry attempt ${attempt + 1}/${maxRetries} after ${delayMs}ms delay`);
+        await new Promise(resolve => setTimeout(resolve, delayMs));
+      }
+
+      const response = await fetch(url, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          content: content,
+        }),
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text().catch(() => "Unknown error");
+
+        // Retry on rate limits (429) or server errors (5xx)
+        if ((response.status === 429 || response.status >= 500) && attempt < maxRetries - 1) {
+          console.error(`[sendFollowup] Discord API error ${response.status}, will retry: ${errorText}`);
+          continue; // Retry
+        }
+
+        console.error(`[sendFollowup] Discord API error ${response.status}: ${errorText}`);
+        throw new Error(`Discord API returned ${response.status}: ${errorText}`);
+      }
+
+      // Success!
+      if (attempt > 0) {
+        console.log(`[sendFollowup] Successfully sent after ${attempt + 1} attempts`);
+      }
+      return;
+
+    } catch (error: any) {
+      // Network errors - retry if not last attempt
+      if (attempt < maxRetries - 1) {
+        console.error(`[sendFollowup] Network error on attempt ${attempt + 1}, will retry:`, error.message);
+        continue;
+      }
+
+      console.error(`[sendFollowup] Failed to send followup message after ${maxRetries} attempts:`, error);
+      throw error;
+    }
+  }
 }
 
 // ---- Delete original interaction response ----
@@ -802,17 +844,140 @@ Please answer the user's query based on the library data above.`;
   return response || "I couldn't process your query. Please try again.";
 }
 
+// ========== D1 DATABASE HELPERS ==========
+
+/**
+ * Parse user query with LLM to extract series, season, and episode
+ * Returns null if unable to parse
+ */
+async function parseEpisodeQuery(
+  query: string,
+  env: Env
+): Promise<{ series: string; season: number; episode: number } | null> {
+  const systemPrompt = `You are a TV episode query parser. Extract series name, season, and episode number from natural language queries.
+
+INSTRUCTIONS:
+- Parse queries like "Brooklyn Nine Nine season 1 episode 1", "Friends S02E05", "The Office 3x12", etc.
+- Return ONLY a JSON object with this exact structure: {"series": "Series Name", "season": 1, "episode": 1}
+- series: The full series name (properly capitalized)
+- season: The season number (integer)
+- episode: The episode number (integer)
+- If you cannot confidently extract all three pieces of information, return {"error": "Could not parse query"}
+- Do NOT include any explanation, just the JSON object
+
+Examples:
+Input: "brooklyn nine nine season 1 episode 1"
+Output: {"series": "Brooklyn Nine-Nine", "season": 1, "episode": 1}
+
+Input: "friends s02e05"
+Output: {"series": "Friends", "season": 2, "episode": 5}
+
+Input: "the office 3x12"
+Output: {"series": "The Office", "season": 3, "episode": 12}
+
+Input: "game of thrones season 7 episode 1"
+Output: {"series": "Game of Thrones", "season": 7, "episode": 1}`;
+
+  try {
+    const response = await callLLM(
+      env.AI,
+      env.OPENROUTER_API_KEY,
+      systemPrompt,
+      `Parse this query: "${query}"`,
+      200,
+      0.1 // Very low temperature for consistent JSON output
+    );
+
+    if (!response) {
+      console.log(`[parseEpisodeQuery] LLM returned empty response`);
+      return null;
+    }
+
+    // Extract JSON from response
+    const jsonMatch = response.match(/\{[\s\S]*?\}/);
+    if (!jsonMatch) {
+      console.log(`[parseEpisodeQuery] No JSON found in response: ${response}`);
+      return null;
+    }
+
+    const parsed = JSON.parse(jsonMatch[0]);
+
+    if (parsed.error) {
+      console.log(`[parseEpisodeQuery] LLM could not parse: ${parsed.error}`);
+      return null;
+    }
+
+    if (!parsed.series || !parsed.season || !parsed.episode) {
+      console.log(`[parseEpisodeQuery] Incomplete parse result: ${JSON.stringify(parsed)}`);
+      return null;
+    }
+
+    console.log(`[parseEpisodeQuery] Successfully parsed: ${JSON.stringify(parsed)}`);
+    return parsed;
+  } catch (error: any) {
+    console.error(`[parseEpisodeQuery] Error: ${error.message}`);
+    return null;
+  }
+}
+
+/**
+ * Query D1 database for exact episode match
+ * Uses fuzzy series name matching (case-insensitive)
+ */
+async function queryEpisodeFromD1(
+  series: string,
+  season: number,
+  episode: number,
+  env: Env
+): Promise<{ filepath: string; series: string; season: number; episode: number } | null> {
+  try {
+    console.log(`[queryEpisodeFromD1] Querying: ${series} S${season}E${episode}`);
+
+    // Query with LIKE for fuzzy series matching (case-insensitive)
+    const result = await env.DB.prepare(
+      `SELECT series, season, episode, filepath
+       FROM episodes
+       WHERE season = ?
+         AND episode = ?
+         AND series LIKE ?
+       LIMIT 1`
+    )
+      .bind(season, episode, `%${series}%`)
+      .first();
+
+    if (!result) {
+      console.log(`[queryEpisodeFromD1] No match found`);
+      return null;
+    }
+
+    console.log(`[queryEpisodeFromD1] Found match: ${result.series} S${result.season}E${result.episode}`);
+    return {
+      filepath: result.filepath as string,
+      series: result.series as string,
+      season: result.season as number,
+      episode: result.episode as number,
+    };
+  } catch (error: any) {
+    console.error(`[queryEpisodeFromD1] Error: ${error.message}`);
+    throw error;
+  }
+}
+
 // ========== OPEN COMMAND HANDLER ==========
 
 async function handleOpenDeferred(
   interaction: DiscordInteraction,
   env: Env
 ): Promise<void> {
+  const startTime = Date.now();
   try {
+    console.log(`[handleOpenDeferred] Starting /open command`);
+
     // Get user query (natural language search for episode)
     const userQuery = interaction.data?.options?.[0]?.value?.trim();
 
     if (!userQuery) {
+      console.log(`[handleOpenDeferred] No query provided`);
       await sendFollowup(
         interaction,
         "❌ Please provide a search query (e.g., \"Brooklyn Nine Nine season 1 episode 1\")"
@@ -820,61 +985,74 @@ async function handleOpenDeferred(
       return;
     }
 
+    console.log(`[handleOpenDeferred] Query: "${userQuery}"`);
+
+    // Parse query with LLM to extract series, season, episode
+    console.log(`[handleOpenDeferred] Parsing query with LLM...`);
+    const parseStartTime = Date.now();
+    const parsed = await parseEpisodeQuery(userQuery, env);
+    console.log(`[handleOpenDeferred] Query parsed in ${Date.now() - parseStartTime}ms`);
+
+    if (!parsed) {
+      console.log(`[handleOpenDeferred] Could not parse query: "${userQuery}"`);
+      await sendFollowup(
+        interaction,
+        `❌ Could not understand query. Please use format like:\n` +
+        `- "Brooklyn Nine Nine season 1 episode 1"\n` +
+        `- "Friends S02E05"\n` +
+        `- "The Office 3x12"`
+      );
+      return;
+    }
+
+    console.log(`[handleOpenDeferred] Parsed: ${parsed.series} S${parsed.season}E${parsed.episode}`);
+
+    // Query D1 database for exact match
+    console.log(`[handleOpenDeferred] Querying D1...`);
+    const d1StartTime = Date.now();
+    const episode = await queryEpisodeFromD1(parsed.series, parsed.season, parsed.episode, env);
+    console.log(`[handleOpenDeferred] D1 query completed in ${Date.now() - d1StartTime}ms`);
+
+    if (!episode) {
+      console.log(`[handleOpenDeferred] No episode found for: ${parsed.series} S${parsed.season}E${parsed.episode}`);
+      await sendFollowup(
+        interaction,
+        `❌ Episode not found: **${parsed.series}** S${String(parsed.season).padStart(2, '0')}E${String(parsed.episode).padStart(2, '0')}`
+      );
+      return;
+    }
+
+    console.log(`[handleOpenDeferred] Found episode: ${episode.series} S${episode.season}E${episode.episode}`);
+
     // Fetch tunnel URL from KV
+    console.log(`[handleOpenDeferred] Fetching tunnel URL from KV...`);
     const tunnelUrl = await env.CASIE_BRIDGE_KV.get("current_tunnel_url");
     if (!tunnelUrl) {
+      console.log(`[handleOpenDeferred] Tunnel URL not found in KV`);
       await sendFollowup(
         interaction,
         "📁 CASIE Bridge is not running. Please start the local server and tunnel."
       );
       return;
     }
-
-    // Query the semantic search endpoint
-    const queryResponse = await fetch(`${tunnelUrl}/query-videos`, {
-      method: "POST",
-      headers: {
-        "Authorization": `Bearer ${env.CASIE_BRIDGE_API_TOKEN}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ query: userQuery, limit: 1 }),
-    });
-
-    if (!queryResponse.ok) {
-      const errorData = await queryResponse.json().catch(() => ({}));
-      await sendFollowup(
-        interaction,
-        `❌ Failed to search episodes: ${errorData.detail || queryResponse.statusText}`
-      );
-      return;
-    }
-
-    const queryResult = await queryResponse.json();
-
-    if (!queryResult.ok || queryResult.count === 0) {
-      await sendFollowup(
-        interaction,
-        `❌ No episodes found for query: "${userQuery}"`
-      );
-      return;
-    }
-
-    // Get the first (best match) result
-    const bestMatch = queryResult.results[0];
-    const filePath = bestMatch.filepath;
+    console.log(`[handleOpenDeferred] Tunnel URL: ${tunnelUrl}`);
 
     // Call the CASIE Bridge /open endpoint
+    console.log(`[handleOpenDeferred] Calling /open endpoint with path: ${episode.filepath}`);
+    const openStartTime = Date.now();
     const openResponse = await fetch(`${tunnelUrl}/open`, {
       method: "POST",
       headers: {
         "Authorization": `Bearer ${env.CASIE_BRIDGE_API_TOKEN}`,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ path: filePath }),
+      body: JSON.stringify({ path: episode.filepath }),
     });
+    console.log(`[handleOpenDeferred] /open endpoint responded in ${Date.now() - openStartTime}ms with status ${openResponse.status}`);
 
     if (!openResponse.ok) {
       const errorData = await openResponse.json().catch(() => ({}));
+      console.error(`[handleOpenDeferred] /open failed: ${openResponse.status} ${JSON.stringify(errorData)}`);
       await sendFollowup(
         interaction,
         `❌ Failed to open file: ${errorData.detail || openResponse.statusText}`
@@ -883,17 +1061,26 @@ async function handleOpenDeferred(
     }
 
     // Format the match info nicely
-    const matchInfo = `**${bestMatch.series}** S${String(bestMatch.season).padStart(2, '0')}E${String(bestMatch.episode).padStart(2, '0')}`;
+    const matchInfo = `**${episode.series}** S${String(episode.season).padStart(2, '0')}E${String(episode.episode).padStart(2, '0')}`;
 
+    console.log(`[handleOpenDeferred] Sending success followup...`);
+    const followupStartTime = Date.now();
     await sendFollowup(
       interaction,
-      `✅ Opening: ${matchInfo}`
+      `🎯 Opening: ${matchInfo}`
     );
+    console.log(`[handleOpenDeferred] Success followup sent in ${Date.now() - followupStartTime}ms`);
+    console.log(`[handleOpenDeferred] Total execution time: ${Date.now() - startTime}ms`);
   } catch (err: any) {
-    await sendFollowup(
-      interaction,
-      `❌ Error opening file: ${err.message}`
-    );
+    console.error(`[handleOpenDeferred] Error after ${Date.now() - startTime}ms:`, err);
+    try {
+      await sendFollowup(
+        interaction,
+        `❌ Error opening file: ${err.message}`
+      );
+    } catch (followupErr: any) {
+      console.error(`[handleOpenDeferred] Failed to send error followup:`, followupErr);
+    }
   }
 }
 

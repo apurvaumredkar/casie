@@ -186,3 +186,6 @@ CLAUDE.md
 
 # CASIE Bridge cached data
 casie-bridge/location.json
+casie-bridge/videos.md
+casie-bridge/ollama_data/
+casie-bridge/qdrant_data/

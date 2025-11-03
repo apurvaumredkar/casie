@@ -12,5 +12,10 @@ binding = "AI"
 binding = "CASIE_BRIDGE_KV"
 id = "fe92484d4d2842e2a035aef260eb5aec"
 
+[[d1_databases]]
+binding = "DB"
+database_name = "videos-db"
+database_id = "c024c6c1-f212-4079-bff5-a93a142eb259"
+
 [observability]
 enabled = true

@@ -1,42 +1,48 @@
 """
-CASIE Bridge - TV Shows Index Generator
-Scans the TV directory and generates a markdown index of available shows,
-seasons, and episodes.
+CASIE Bridge - TV Shows Management
+
+This script handles both:
+1. Markdown index generation (videos.md) for local TV show library
+2. Cloudflare D1 database population for Discord bot queries
+
+Usage:
+    python videos.py [--markdown-only | --d1-only | --both]
+
+Options:
+    --markdown-only    Generate only videos.md index
+    --d1-only          Populate only D1 database
+    --both             Do both operations (default)
 """
 
 import os
+import argparse
+import subprocess
 from pathlib import Path
 from collections import defaultdict
 import re
 from typing import Optional
 from tqdm import tqdm
+from dotenv import load_dotenv
+import tempfile
 
-# Qdrant and Ollama imports (optional dependencies)
-try:
-    from qdrant_client import QdrantClient
-    from qdrant_client.models import Distance, VectorParams, PointStruct
-    import ollama
-    QDRANT_AVAILABLE = True
-except ImportError:
-    QDRANT_AVAILABLE = False
-    print("Warning: qdrant-client or ollama not installed. Qdrant features disabled.")
+# Load environment variables
+load_dotenv()
+
+# Supported video extensions
+VIDEO_EXTENSIONS = {'.mp4', '.mkv', '.avi', '.mov', '.wmv', '.flv', '.webm', '.m4v'}
 
 
 def parse_episode_filename(filename: str, filepath: str) -> Optional[dict]:
     """
     Parse episode filename to extract series, season, and episode information.
 
-    All TV shows now follow the standardized format after renaming:
+    All TV shows follow the standardized format:
     - S##E## Episode Title.ext
 
-    This simplifies parsing to a single pattern match.
-
     Returns:
-        dict with keys: series, season, episode, filepath
+        dict with keys: series, season, episode, title, filepath
         None if pattern doesn't match
     """
-    # Standardized format: S##E## Episode Title.ext
-    # Extract from parent directory name (which is the show name)
     filepath_obj = Path(filepath)
 
     # Pattern: S##E## Episode Title.ext
@@ -62,7 +68,6 @@ def parse_episode_filename(filename: str, filepath: str) -> Optional[dict]:
             'filepath': filepath
         }
 
-    # If pattern doesn't match, return None
     return None
 
 
@@ -70,12 +75,8 @@ def parse_season_folder(folder_name: str) -> int | None:
     """
     Extract season number from folder name.
 
-    All season folders now follow the standardized format after renaming:
-    - SX (e.g., S1, S2, S10)
-
-    This simplifies parsing to a single pattern match.
+    Format: SX (e.g., S1, S2, S10)
     """
-    # Standardized format: SX (e.g., S1, S2, S10)
     pattern = r'^S(\d+)$'
 
     match = re.match(pattern, folder_name, re.IGNORECASE)
@@ -87,12 +88,11 @@ def parse_season_folder(folder_name: str) -> int | None:
 
 def count_video_files(directory: Path) -> int:
     """Count video files in a directory."""
-    video_extensions = {'.mp4', '.mkv', '.avi', '.mov', '.wmv', '.flv', '.webm', '.m4v'}
     count = 0
 
     try:
         for file in directory.iterdir():
-            if file.is_file() and file.suffix.lower() in video_extensions:
+            if file.is_file() and file.suffix.lower() in VIDEO_EXTENSIONS:
                 count += 1
     except PermissionError:
         pass
@@ -100,13 +100,9 @@ def count_video_files(directory: Path) -> int:
     return count
 
 
-# Supported video extensions (used in multiple places)
-VIDEO_EXTENSIONS = {'.mp4', '.mkv', '.avi', '.mov', '.wmv', '.flv', '.webm', '.m4v'}
-
-
-def scan_tv_directory(tv_path: str) -> dict:
+def scan_tv_directory_for_markdown(tv_path: str) -> dict:
     """
-    Scan TV directory and return structured data.
+    Scan TV directory and return structured data for markdown generation.
 
     Returns:
         dict: {
@@ -156,6 +152,55 @@ def scan_tv_directory(tv_path: str) -> dict:
     return dict(shows)
 
 
+def scan_tv_directory_for_d1(tv_path: str) -> list[dict]:
+    """
+    Scan TV directory and extract episode information for D1 population.
+
+    Returns:
+        list of dicts: [{'series': str, 'season': int, 'episode': int, 'filepath': str}]
+    """
+    episodes = []
+    unparseable = []
+
+    print(f"\nScanning TV directory: {tv_path}")
+    print("-" * 60)
+
+    tv_dir = Path(tv_path)
+    if not tv_dir.exists():
+        print(f"Error: Directory does not exist: {tv_path}")
+        return episodes
+
+    # Scan all subdirectories
+    for show_dir in sorted(tv_dir.iterdir()):
+        if not show_dir.is_dir():
+            continue
+
+        print(f"Scanning: {show_dir.name}")
+
+        # Scan all season subdirectories
+        for season_dir in show_dir.iterdir():
+            if not season_dir.is_dir():
+                continue
+
+            # Scan all video files in season directory
+            for video_file in season_dir.glob('*'):
+                if video_file.suffix.lower() not in VIDEO_EXTENSIONS:
+                    continue
+
+                parsed = parse_episode_filename(video_file.name, str(video_file))
+                if parsed:
+                    episodes.append(parsed)
+                else:
+                    unparseable.append(video_file.name)
+
+    print("-" * 60)
+    print(f"Found {len(episodes)} parseable episodes")
+    if unparseable:
+        print(f"Warning: {len(unparseable)} unparseable files")
+
+    return episodes
+
+
 def generate_markdown(shows_data: dict, output_path: str):
     """Generate markdown file from shows data."""
 
@@ -191,357 +236,178 @@ def generate_markdown(shows_data: dict, output_path: str):
             f.write("---\n\n")
 
 
-def generate_embedding(text: str, host: str = "http://localhost:11434") -> list[float]:
-    """
-    Generate embedding vector for text using BGE-M3 model via Ollama.
+def populate_d1(episodes: list[dict], database_id: str):
+    """Populate Cloudflare D1 database with episodes data."""
+    print(f"\n{'=' * 60}")
+    print(f"POPULATING D1 DATABASE")
+    print(f"{'=' * 60}")
+    print(f"Database ID: {database_id}")
+    print(f"Total episodes to insert: {len(episodes)}")
 
-    Args:
-        text: The text to embed
-        host: Ollama server host (Docker container)
+    # Clear existing data first
+    print("\nClearing existing data...")
+    subprocess.run(
+        'npx wrangler d1 execute videos-db --remote --command "DELETE FROM episodes;"',
+        cwd="../casie-core",
+        shell=True,
+        check=True
+    )
+    print("[OK] Existing data cleared")
 
-    Returns:
-        1024-dimensional embedding vector
+    # Insert episodes in batches (D1 has a limit on statement size)
+    batch_size = 100
+    total_batches = (len(episodes) + batch_size - 1) // batch_size
 
-    Raises:
-        Exception: If Ollama is unavailable or embedding fails
-    """
-    if not QDRANT_AVAILABLE:
-        raise Exception("Qdrant/Ollama dependencies not installed")
+    print(f"\nInserting episodes in {total_batches} batches...")
 
-    try:
-        # Create client pointing to Docker Ollama instance with GPU
-        client = ollama.Client(host=host)
-        response = client.embeddings(model='bge-m3', prompt=text)
-        embedding = response['embedding']
+    for i in tqdm(range(0, len(episodes), batch_size), desc="Inserting batches"):
+        batch = episodes[i:i+batch_size]
 
-        if len(embedding) != 1024:
-            raise Exception(f"Expected 1024-dim vector, got {len(embedding)}")
+        # Build INSERT statement
+        values = []
+        for ep in batch:
+            # Escape single quotes in strings
+            series = ep['series'].replace("'", "''")
+            filepath = ep['filepath'].replace("'", "''")
+            values.append(f"('{series}', {ep['season']}, {ep['episode']}, '{filepath}')")
 
-        return embedding
-    except Exception as e:
-        raise Exception(f"Failed to generate embedding: {e}")
+        insert_sql = f"""
+        INSERT INTO episodes (series, season, episode, filepath)
+        VALUES {', '.join(values)};
+        """
 
-
-def ensure_qdrant_collection(client: QdrantClient, collection_name: str = "videos_index"):
-    """
-    Ensure Qdrant collection exists. Creates it if it doesn't exist.
-
-    Args:
-        client: QdrantClient instance
-        collection_name: Name of the collection to create
-
-    Returns:
-        bool: True if collection was created, False if it already existed
-    """
-    try:
-        collections = client.get_collections()
-        if any(col.name == collection_name for col in collections.collections):
-            print(f"Collection '{collection_name}' already exists")
-            return False
-    except Exception as e:
-        print(f"Warning: Could not check existing collections: {e}")
-
-    # Create collection with 1024 dimensions (BGE-M3)
-    try:
-        client.create_collection(
-            collection_name=collection_name,
-            vectors_config=VectorParams(size=1024, distance=Distance.COSINE)
-        )
-        print(f"Created new collection '{collection_name}' with 1024-dim cosine distance")
-        return True
-    except Exception as e:
-        if "already exists" in str(e):
-            print(f"Collection '{collection_name}' already exists")
-            return False
-        else:
-            raise Exception(f"Failed to create collection: {e}")
-
-
-def get_indexed_episodes(client: QdrantClient, collection_name: str = "videos_index") -> set:
-    """
-    Get set of already indexed episodes from Qdrant.
-
-    Returns:
-        set: Set of tuples (series_name, season, episode) that are already indexed
-    """
-    try:
-        # Scroll through all points to get indexed episodes
-        indexed = set()
-        offset = None
-
-        while True:
-            records, offset = client.scroll(
-                collection_name=collection_name,
-                limit=100,
-                offset=offset,
-                with_payload=True,
-                with_vectors=False
-            )
-
-            if not records:
-                break
-
-            for record in records:
-                payload = record.payload
-                key = (payload['series'], payload['season'], payload['episode'])
-                indexed.add(key)
-
-            if offset is None:
-                break
-
-        return indexed
-    except Exception as e:
-        print(f"Warning: Could not retrieve indexed episodes: {e}")
-        return set()
-
-
-def index_episodes_to_qdrant(tv_path: str, collection_name: str = "videos_index"):
-    """
-    Index all TV show episodes to Qdrant.
-
-    Args:
-        tv_path: Base TV directory path
-        collection_name: Qdrant collection name
-    """
-    if not QDRANT_AVAILABLE:
-        print("Error: Qdrant/Ollama dependencies not installed")
-        return
-
-    print("\n" + "=" * 60)
-    print("QDRANT INDEXING - ALL TV SHOWS")
-    print("=" * 60)
-
-    # Check Ollama GPU status
-    try:
-        ollama_client = ollama.Client(host="http://localhost:11434")
-        # Test connection and GPU availability
-        test_response = ollama_client.embeddings(model='bge-m3', prompt='test')
-        print("[OK] Ollama with GPU-accelerated BGE-M3 ready")
-    except Exception as e:
-        print(f"Warning: Could not verify Ollama GPU status: {e}")
-
-    # Initialize Qdrant client (persistent Docker instance)
-    try:
-        client = QdrantClient(host="localhost", port=6333)
-        print("[OK] Connected to persistent Qdrant instance at localhost:6333")
-    except Exception as e:
-        print(f"Error: Failed to connect to Qdrant server at localhost:6333")
-        print(f"Details: {e}")
-        print("\nMake sure Docker services are running:")
-        print("  cd casie-bridge && docker-compose up -d")
-        return
-
-    # Ensure collection exists (create if needed)
-    ensure_qdrant_collection(client, collection_name)
-
-    # Get already indexed episodes
-    print("\nRetrieving indexed episodes from Qdrant...")
-    indexed_episodes = get_indexed_episodes(client, collection_name)
-    print(f"Found {len(indexed_episodes)} episodes already indexed")
-
-    tv_dir = Path(tv_path)
-    if not tv_dir.exists():
-        print(f"Error: TV directory not found: {tv_path}")
-        return
-
-    print(f"\nScanning all shows in: {tv_path}")
-
-    # Parse all episode files across all shows
-    episodes = []
-    total_files = 0
-    unparseable_files = []  # Track files that couldn't be parsed
-    skipped_count = 0  # Track already indexed episodes
-
-    # Get all show directories
-    show_dirs = [d for d in sorted(tv_dir.iterdir()) if d.is_dir()]
-
-    print(f"Found {len(show_dirs)} show(s)\n")
-    print("Scanning episodes across all shows...")
-
-    for show_dir in tqdm(show_dirs, desc="Shows", unit="show"):
-        # Check if show has season folders or files directly
-        season_dirs = []
-        for item in show_dir.iterdir():
-            if item.is_dir():
-                season_num = parse_season_folder(item.name)
-                if season_num is not None:
-                    season_dirs.append((season_num, item))
-
-        if not season_dirs:
-            # No season folders, check for files directly in show folder
-            for file in show_dir.iterdir():
-                if file.is_file() and file.suffix.lower() in VIDEO_EXTENSIONS:
-                    total_files += 1
-                    parsed = parse_episode_filename(file.name, str(file))
-                    if parsed:
-                        # Check if already indexed
-                        key = (parsed['series'], parsed['season'], parsed['episode'])
-                        if key not in indexed_episodes:
-                            episodes.append(parsed)
-                        else:
-                            skipped_count += 1
-                    else:
-                        unparseable_files.append(file.name)
-        else:
-            # Process season folders
-            for season_num, season_dir in sorted(season_dirs):
-                for file in season_dir.iterdir():
-                    if file.is_file() and file.suffix.lower() in VIDEO_EXTENSIONS:
-                        total_files += 1
-                        parsed = parse_episode_filename(file.name, str(file))
-                        if parsed:
-                            # Check if already indexed
-                            key = (parsed['series'], parsed['season'], parsed['episode'])
-                            if key not in indexed_episodes:
-                                episodes.append(parsed)
-                            else:
-                                skipped_count += 1
-                        else:
-                            unparseable_files.append(file.name)
-
-    print(f"\nTotal video files found: {total_files}")
-    print(f"Episodes already indexed: {skipped_count}")
-    print(f"New episodes to index: {len(episodes)}")
-
-    if total_files != (len(episodes) + skipped_count + len(unparseable_files)):
-        print(f"Warning: File count mismatch")
-
-    if unparseable_files:
-        print(f"Unparseable files: {len(unparseable_files)}")
-        print(f"\nSample unparseable filenames (showing first 10):")
-        for filename in unparseable_files[:10]:
-            print(f"  - {filename}")
-
-    if not episodes:
-        print("\n[OK] All episodes already indexed - nothing to do!")
-        return
-
-    # Generate embeddings and create points
-    print("\nGenerating embeddings...")
-    points = []
-    failed_embeddings = 0
-
-    # Get current max ID from Qdrant to avoid collisions
-    try:
-        # Get the highest point ID currently in collection
-        max_id = 0
-        offset = None
-        while True:
-            records, offset = client.scroll(
-                collection_name=collection_name,
-                limit=100,
-                offset=offset,
-                with_payload=False,
-                with_vectors=False
-            )
-            if not records:
-                break
-            for record in records:
-                if record.id > max_id:
-                    max_id = record.id
-            if offset is None:
-                break
-        next_id = max_id + 1
-        print(f"Starting new point IDs from: {next_id}")
-    except Exception as e:
-        print(f"Warning: Could not get max ID from Qdrant: {e}")
-        next_id = 0
-
-    for idx, episode in enumerate(tqdm(episodes, desc="Embedding episodes", unit="episode")):
-        # Create content text for embedding (this is what gets embedded)
-        content_text = f"{episode['series']} Season {episode['season']} Episode {episode['episode']}"
-
+        # Execute batch insert
         try:
-            embedding = generate_embedding(content_text)
+            # Write SQL to temporary file to avoid command line length limits
+            with tempfile.NamedTemporaryFile(mode='w', suffix='.sql', delete=False, encoding='utf-8') as f:
+                f.write(insert_sql)
+                temp_sql_file = f.name
 
-            # Create point with unique ID (start after highest existing ID)
-            point = PointStruct(
-                id=next_id + idx,
-                vector=embedding,
-                payload={
-                    'content': content_text,  # The embedded text
-                    'series': episode['series'],
-                    'season': episode['season'],
-                    'episode': episode['episode'],
-                    'filepath': episode['filepath']
-                }
-            )
-            points.append(point)
-        except Exception as e:
-            failed_embeddings += 1
-            tqdm.write(f"Error generating embedding for episode {idx+1}: {e}")
+            try:
+                subprocess.run(
+                    f'npx wrangler d1 execute videos-db --remote --file="{temp_sql_file}"',
+                    cwd="../casie-core",
+                    shell=True,
+                    check=True,
+                    capture_output=True
+                )
+            finally:
+                # Clean up temp file
+                os.unlink(temp_sql_file)
+        except subprocess.CalledProcessError as e:
+            print(f"\nError inserting batch {i//batch_size + 1}")
+            if e.stderr:
+                print(f"Error: {e.stderr.decode('utf-8', errors='ignore')}")
             continue
 
-    if not points:
-        print("\nNo embeddings generated!")
-        return
+    print(f"\n[OK] Successfully inserted {len(episodes)} episodes")
 
-    # Upsert to Qdrant in batches to prevent timeouts
-    print(f"\nUpserting {len(points)} points to Qdrant in batches...")
-    batch_size = 100
-    total_upserted = 0
+    # Verify count
+    print("\nVerifying insertion...")
+    count_result = subprocess.run(
+        'npx wrangler d1 execute videos-db --remote --command "SELECT COUNT(*) as count FROM episodes;"',
+        cwd="../casie-core",
+        shell=True,
+        capture_output=True,
+        text=True
+    )
 
-    try:
-        for i in range(0, len(points), batch_size):
-            batch = points[i:i+batch_size]
-            client.upsert(collection_name=collection_name, points=batch)
-            total_upserted += len(batch)
-            print(f"  Upserted batch {i//batch_size + 1}/{(len(points)-1)//batch_size + 1} ({total_upserted}/{len(points)} points)")
+    print(f"[OK] Database verification complete")
+    print(count_result.stdout)
 
-        print(f"[OK] Successfully indexed {len(points)} episodes")
-    except Exception as e:
-        print(f"Error upserting to Qdrant: {e}")
-        return
+    print(f"{'=' * 60}")
 
-    # Final validation
-    print("\n" + "=" * 60)
-    print("INDEXING SUMMARY")
+
+def generate_markdown_index(tv_path: str):
+    """Generate markdown index of TV shows."""
     print("=" * 60)
-    print(f"Video files found:        {total_files}")
-    print(f"Already indexed:          {skipped_count}")
-    print(f"New episodes processed:   {len(episodes)}")
-    print(f"New embeddings generated: {len(points)}")
-    print(f"Failed embeddings:        {failed_embeddings}")
-    print(f"Total in Qdrant now:      {len(indexed_episodes) + len(points)}")
-
-    if len(points) == len(episodes):
-        print("\n[OK] Successfully indexed all new episodes (100% success)")
-    else:
-        print(f"\nWarning: Point count mismatch ({len(points)} points vs {len(episodes)} episodes)")
-
+    print("GENERATING MARKDOWN INDEX")
     print("=" * 60)
 
-
-def main():
-    """Main execution - Generate markdown AND index to Qdrant."""
-    tv_path = r"C:\Users\apoor\Videos\TV"
-
-    # Step 1: Generate markdown index
     output_path = Path(__file__).parent / "videos.md"
 
     print(f"Scanning TV directory: {tv_path}")
     print("-" * 60)
 
-    shows_data = scan_tv_directory(tv_path)
+    shows_data = scan_tv_directory_for_markdown(tv_path)
 
     print("-" * 60)
     print(f"Found {len(shows_data)} show(s)")
 
     if shows_data:
         generate_markdown(shows_data, str(output_path))
-        print(f"\nGenerated: {output_path}")
+        print(f"\n[OK] Generated: {output_path}")
         print("\nSummary:")
         for show, seasons in sorted(shows_data.items()):
             print(f"  {show}: {len(seasons)} season(s), {sum(seasons.values())} episode(s)")
     else:
         print("\nNo shows found!")
 
-    # Step 2: Index to Qdrant
-    if QDRANT_AVAILABLE:
-        print("\n")
-        index_episodes_to_qdrant(tv_path)
-    else:
-        print("\nSkipping Qdrant indexing (dependencies not installed)")
+    return bool(shows_data)
+
+
+def populate_d1_database(tv_path: str, database_id: str):
+    """Populate D1 database with episode data."""
+    episodes = scan_tv_directory_for_d1(tv_path)
+
+    if not episodes:
+        print("\nNo episodes found!")
+        return False
+
+    populate_d1(episodes, database_id)
+    print("\n[OK] D1 population complete!")
+    return True
+
+
+def main():
+    """Main execution with CLI argument parsing."""
+    parser = argparse.ArgumentParser(
+        description="CASIE TV Shows Management - Generate markdown index and/or populate D1 database"
+    )
+    parser.add_argument(
+        '--markdown-only',
+        action='store_true',
+        help='Generate only videos.md index'
+    )
+    parser.add_argument(
+        '--d1-only',
+        action='store_true',
+        help='Populate only D1 database'
+    )
+    parser.add_argument(
+        '--both',
+        action='store_true',
+        help='Do both operations (default)'
+    )
+
+    args = parser.parse_args()
+
+    # Default to both if no specific flag is set
+    if not (args.markdown_only or args.d1_only):
+        args.both = True
+
+    # Get configuration from environment variables
+    tv_path = os.getenv("TV_DIRECTORY", r"C:\path\to\your\TV")
+    database_id = os.getenv("D1_DATABASE_ID", "your-database-id")
+
+    # Validate configuration
+    if not os.path.exists(tv_path):
+        print(f"Error: TV_DIRECTORY not found: {tv_path}")
+        print("Please set TV_DIRECTORY environment variable in .env file")
+        return
+
+    print(f"\nTV Directory: {tv_path}\n")
+
+    # Execute requested operations
+    if args.markdown_only or args.both:
+        generate_markdown_index(tv_path)
+
+    if args.d1_only or args.both:
+        if args.both:
+            print()  # Add spacing between operations
+        populate_d1_database(tv_path, database_id)
+
+    print("\n[OK] All operations complete!")
 
 
 if __name__ == "__main__":
