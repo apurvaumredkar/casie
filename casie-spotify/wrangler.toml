@@ -35,7 +35,7 @@ command = "npm run build"
 # KV namespace for persistent token storage
 [[kv_namespaces]]
 binding = "SPOTIFY_TOKENS"
-id = "4e9afc5c83394af987c57a83012e30b8"
+id = "cfca58ff7a9945cda486920ba1f5551a"
 
 # Cloudflare AI binding
 [ai]
