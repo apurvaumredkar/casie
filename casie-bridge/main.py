@@ -29,44 +29,10 @@ API_AUTH_TOKEN = os.getenv("API_AUTH_TOKEN")
 if not API_AUTH_TOKEN:
     raise ValueError("API_AUTH_TOKEN not set in .env file")
 
-# Cloudflare KV configuration (optional - for syncing location data)
-CLOUDFLARE_ACCOUNT_ID = os.getenv("CLOUDFLARE_ACCOUNT_ID")
-CLOUDFLARE_API_TOKEN = os.getenv("CLOUDFLARE_API_TOKEN")
-KV_NAMESPACE_ID = os.getenv("KV_NAMESPACE_ID")
-
-KV_SYNC_ENABLED = all([CLOUDFLARE_ACCOUNT_ID, CLOUDFLARE_API_TOKEN, KV_NAMESPACE_ID])
-if not KV_SYNC_ENABLED:
-    print("Warning: Cloudflare KV credentials not configured. Location sync to KV disabled.")
-
 # Security scheme
 security = HTTPBearer()
 
 app = FastAPI(title="CASIE Bridge", version="1.0.0")
-
-
-async def sync_location_to_kv(location_data: dict) -> bool:
-    """
-    Sync location data to Cloudflare KV for use by GitHub Actions weather CRON.
-    Returns True if successful, False if failed or disabled.
-    """
-    if not KV_SYNC_ENABLED:
-        return False
-
-    try:
-        url = f"https://api.cloudflare.com/client/v4/accounts/{CLOUDFLARE_ACCOUNT_ID}/storage/kv/namespaces/{KV_NAMESPACE_ID}/values/location_cache"
-        headers = {
-            "Authorization": f"Bearer {CLOUDFLARE_API_TOKEN}",
-            "Content-Type": "application/json"
-        }
-
-        async with httpx.AsyncClient() as client:
-            response = await client.put(url, json=location_data, headers=headers, timeout=10.0)
-            response.raise_for_status()
-            print(f"Successfully synced location data to Cloudflare KV")
-            return True
-    except Exception as e:
-        print(f"Failed to sync location to KV: {e}")
-        return False
 
 
 def verify_token(credentials: HTTPAuthorizationCredentials = Security(security)) -> str:
@@ -189,9 +155,6 @@ async def location(token: str = Security(verify_token)):
 
         with open(location_file, 'w', encoding='utf-8') as f:
             json.dump(cache_data, f, indent=2)
-
-        # Sync location data to Cloudflare KV (async, non-blocking)
-        await sync_location_to_kv(location_data)
 
         return {
             "ok": True,
