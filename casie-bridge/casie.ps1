@@ -1,22 +1,16 @@
 # CASIE Bridge - Unified Service Manager
-# Manages FastAPI server and Cloudflare tunnel with a single command
+# Manages FastAPI server and Cloudflare tunnel as a single unit
 #
 # Usage:
-#   casie.ps1 -Action start              # Start all services
-#   casie.ps1 -Action start -Service api # Start FastAPI only
-#   casie.ps1 -Action start -Service tunnel # Start tunnel only
-#   casie.ps1 -Action stop               # Stop all services
-#   casie.ps1 -Action restart            # Restart all services
-#   casie.ps1 -Action status             # Check service status
+#   casie.ps1 -Action start    # Start both services (FastAPI → Tunnel)
+#   casie.ps1 -Action stop     # Stop both services
+#   casie.ps1 -Action restart  # Restart both services
+#   casie.ps1 -Action status   # Check service status
 
 param(
     [Parameter(Mandatory=$true)]
     [ValidateSet("start", "stop", "restart", "status")]
-    [string]$Action,
-
-    [Parameter(Mandatory=$false)]
-    [ValidateSet("all", "api", "tunnel")]
-    [string]$Service = "all"
+    [string]$Action
 )
 
 # Get script directory for portable paths
@@ -42,9 +36,30 @@ function Get-EnvVars {
 
 # Check if FastAPI is running
 function Test-FastAPI {
-    $process = Get-Process -Name "python" -ErrorAction SilentlyContinue |
-               Where-Object { $_.CommandLine -like "*uvicorn main:app*" }
-    return $process
+    # Simply test if the health endpoint responds with auth
+    try {
+        $envVars = Get-EnvVars
+        $apiToken = $envVars['API_AUTH_TOKEN']
+        $headers = @{}
+        if ($apiToken) {
+            $headers['Authorization'] = "Bearer $apiToken"
+        }
+
+        $response = Invoke-WebRequest -Uri "http://127.0.0.1:8000/health" `
+                                     -Method GET `
+                                     -Headers $headers `
+                                     -TimeoutSec 2 `
+                                     -ErrorAction Stop
+
+        if ($response.StatusCode -eq 200) {
+            # Get any Python process as a placeholder for PID display
+            $process = Get-Process -Name "python" -ErrorAction SilentlyContinue | Select-Object -First 1
+            return $process
+        }
+    } catch {
+        return $null
+    }
+    return $null
 }
 
 # Check if Cloudflare tunnel is running
@@ -62,10 +77,20 @@ function Wait-FastAPIHealth {
 
     Write-Host "Waiting for FastAPI to be healthy..." -ForegroundColor Cyan
 
+    # Get API token from .env
+    $envVars = Get-EnvVars
+    $apiToken = $envVars['API_AUTH_TOKEN']
+
     while ($elapsed -lt $TimeoutSeconds) {
         try {
+            $headers = @{}
+            if ($apiToken) {
+                $headers['Authorization'] = "Bearer $apiToken"
+            }
+
             $response = Invoke-WebRequest -Uri "http://127.0.0.1:8000/health" `
                                          -Method GET `
+                                         -Headers $headers `
                                          -TimeoutSec 2 `
                                          -ErrorAction SilentlyContinue
 
@@ -250,12 +275,19 @@ function Show-Status {
         Write-Host "  PID: $($fastapi.Id)" -ForegroundColor Cyan
         Write-Host "  URL: http://127.0.0.1:8000" -ForegroundColor Cyan
 
-        # Try to get health status
+        # Try to get health status with authentication
         try {
-            $health = Invoke-RestMethod -Uri "http://127.0.0.1:8000/health" -TimeoutSec 2
+            $envVars = Get-EnvVars
+            $apiToken = $envVars['API_AUTH_TOKEN']
+            $headers = @{}
+            if ($apiToken) {
+                $headers['Authorization'] = "Bearer $apiToken"
+            }
+
+            $health = Invoke-RestMethod -Uri "http://127.0.0.1:8000/health" -Headers $headers -TimeoutSec 2
             Write-Host "  Health: OK" -ForegroundColor Green
         } catch {
-            Write-Host "  Health: ERROR (not responding)" -ForegroundColor Red
+            Write-Host "  Health: ERROR (not responding or auth failed)" -ForegroundColor Red
         }
     } else {
         Write-Host "FastAPI Server: Not running" -ForegroundColor Red
@@ -297,22 +329,32 @@ Write-Host ""
 
 switch ($Action) {
     "start" {
-        $success = $true
+        # Always start FastAPI first
+        $fastAPIStarted = Start-FastAPI
+        Write-Host ""
 
-        if ($Service -eq "all" -or $Service -eq "api") {
-            $success = Start-FastAPI -and $success
-            Write-Host ""
-        }
-
-        if ($Service -eq "all" -or $Service -eq "tunnel") {
-            if ($Service -eq "all") {
-                Start-Sleep -Seconds 2  # Give FastAPI time to stabilize
+        # Verify FastAPI is healthy before starting tunnel
+        if ($fastAPIStarted) {
+            Write-Host "Verifying FastAPI is ready before starting tunnel..." -ForegroundColor Cyan
+            $fastAPIReady = Test-FastAPI
+            if (-not $fastAPIReady) {
+                Write-Host "ERROR: FastAPI started but health check failed" -ForegroundColor Red
+                Write-Host "Cannot start tunnel without healthy FastAPI backend" -ForegroundColor Red
+                exit 1
             }
-            $success = Start-Tunnel -and $success
+            Write-Host "FastAPI is ready!" -ForegroundColor Green
             Write-Host ""
+        } else {
+            Write-Host "ERROR: Failed to start FastAPI" -ForegroundColor Red
+            Write-Host "Cannot start tunnel without FastAPI backend" -ForegroundColor Red
+            exit 1
         }
 
-        if ($success) {
+        # Now start the tunnel
+        $tunnelStarted = Start-Tunnel
+        Write-Host ""
+
+        if ($fastAPIStarted -and $tunnelStarted) {
             Write-Host "========================================" -ForegroundColor Green
             Write-Host "   Services Started Successfully" -ForegroundColor Green
             Write-Host "========================================" -ForegroundColor Green
@@ -326,15 +368,11 @@ switch ($Action) {
     }
 
     "stop" {
-        if ($Service -eq "all" -or $Service -eq "tunnel") {
-            Stop-Tunnel
-            Write-Host ""
-        }
-
-        if ($Service -eq "all" -or $Service -eq "api") {
-            Stop-FastAPI
-            Write-Host ""
-        }
+        # Stop tunnel first, then FastAPI
+        Stop-Tunnel
+        Write-Host ""
+        Stop-FastAPI
+        Write-Host ""
 
         Write-Host "========================================" -ForegroundColor Green
         Write-Host "   Services Stopped" -ForegroundColor Green
@@ -346,38 +384,44 @@ switch ($Action) {
         Write-Host "Restarting services..." -ForegroundColor Cyan
         Write-Host ""
 
-        # Stop services
-        if ($Service -eq "all" -or $Service -eq "tunnel") {
-            Stop-Tunnel
-        }
-        if ($Service -eq "all" -or $Service -eq "api") {
-            Stop-FastAPI
-        }
-
+        # Stop both services (tunnel first)
+        Stop-Tunnel
+        Stop-FastAPI
         Write-Host ""
         Start-Sleep -Seconds 2
 
-        # Start services
-        $success = $true
-        if ($Service -eq "all" -or $Service -eq "api") {
-            $success = Start-FastAPI -and $success
-            Write-Host ""
-        }
+        # Start FastAPI first
+        $fastAPIStarted = Start-FastAPI
+        Write-Host ""
 
-        if ($Service -eq "all" -or $Service -eq "tunnel") {
-            if ($Service -eq "all") {
-                Start-Sleep -Seconds 2
+        # Verify FastAPI is healthy before starting tunnel
+        if ($fastAPIStarted) {
+            Write-Host "Verifying FastAPI is ready before starting tunnel..." -ForegroundColor Cyan
+            $fastAPIReady = Test-FastAPI
+            if (-not $fastAPIReady) {
+                Write-Host "ERROR: FastAPI started but health check failed" -ForegroundColor Red
+                exit 1
             }
-            $success = Start-Tunnel -and $success
+            Write-Host "FastAPI is ready!" -ForegroundColor Green
             Write-Host ""
+        } else {
+            Write-Host "ERROR: Failed to start FastAPI" -ForegroundColor Red
+            exit 1
         }
 
-        if ($success) {
+        # Now start the tunnel
+        $tunnelStarted = Start-Tunnel
+        Write-Host ""
+
+        if ($fastAPIStarted -and $tunnelStarted) {
             Write-Host "========================================" -ForegroundColor Green
             Write-Host "   Services Restarted Successfully" -ForegroundColor Green
             Write-Host "========================================" -ForegroundColor Green
             exit 0
         } else {
+            Write-Host "========================================" -ForegroundColor Red
+            Write-Host "   Restart Failed" -ForegroundColor Red
+            Write-Host "========================================" -ForegroundColor Red
             exit 1
         }
     }
