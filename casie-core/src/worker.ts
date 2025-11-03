@@ -381,6 +381,18 @@ async function sendFollowup(
       if (!response.ok) {
         const errorText = await response.text().catch(() => "Unknown error");
 
+        // If rate limited (429) and this is the last attempt, send user-friendly message
+        if (response.status === 429 && attempt === maxRetries - 1) {
+          console.error(`[sendFollowup] Rate limited after ${maxRetries} attempts, sending user-friendly message`);
+          // Try one more time with the rate limit message
+          await fetch(url, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ content: "I am being rate limited 😷 Please try after calming down!" }),
+          }).catch(() => {}); // Ignore errors on this final attempt
+          return;
+        }
+
         // Retry on rate limits (429) or server errors (5xx)
         if ((response.status === 429 || response.status >= 500) && attempt < maxRetries - 1) {
           console.error(`[sendFollowup] Discord API error ${response.status}, will retry: ${errorText}`);
@@ -1148,11 +1160,13 @@ Please respond in JSON format as specified above.`;
 
     for (let i = startIndex; i < response.length; i++) {
       const char = response[i];
-      jsonStr += char;
 
       if (char === '{') braceCount++;
-      if (char === '}') braceCount--;
+      else if (char === '}') braceCount--;
 
+      jsonStr += char;
+
+      // Break AFTER adding the closing brace
       if (braceCount === 0) break;
     }
 
