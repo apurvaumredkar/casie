@@ -79,32 +79,6 @@ const commands = [
     ],
   },
   {
-    name: 'files',
-    description: '[DEPRECATED] Query your local TV show library (use /videos instead)',
-    dm_permission: false,
-    options: [
-      {
-        name: 'query',
-        description: 'What would you like to know?',
-        type: 3, // STRING type
-        required: true,
-      },
-    ],
-  },
-  {
-    name: 'open',
-    description: '[DEPRECATED] Open a TV show episode (use /videos instead)',
-    dm_permission: false,
-    options: [
-      {
-        name: 'query',
-        description: 'Search for an episode (e.g., "Brooklyn Nine Nine season 1 episode 1")',
-        type: 3, // STRING type
-        required: true,
-      },
-    ],
-  },
-  {
     name: 'pc-lock',
     description: 'Lock your Windows PC with confirmation (requires CASIE Bridge)',
     dm_permission: false,
