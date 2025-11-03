@@ -244,7 +244,18 @@ def populate_d1(episodes: list[dict], database_id: str):
     print(f"Database ID: {database_id}")
     print(f"Total episodes to insert: {len(episodes)}")
 
-    # Clear existing data first
+    # Ensure table exists first
+    print("\nEnsuring table exists...")
+    create_table_sql = "CREATE TABLE IF NOT EXISTS episodes (id INTEGER PRIMARY KEY AUTOINCREMENT, series TEXT NOT NULL, season INTEGER NOT NULL, episode INTEGER NOT NULL, episode_name TEXT, filepath TEXT NOT NULL, created_at DATETIME DEFAULT CURRENT_TIMESTAMP);"
+    subprocess.run(
+        f'npx wrangler d1 execute videos-db --remote --command "{create_table_sql}"',
+        cwd="../casie-core",
+        shell=True,
+        check=True
+    )
+    print("[OK] Table ready")
+
+    # Clear existing data
     print("\nClearing existing data...")
     subprocess.run(
         'npx wrangler d1 execute videos-db --remote --command "DELETE FROM episodes;"',
