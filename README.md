@@ -24,11 +24,6 @@ CASIE is a **unified Discord bot** that demonstrates best practices for building
 - `/chat <query>` - Chat with AI assistant with conversational memory (2-hour context window)
 - `/web-search <query>` - Search the web and get AI-summarized results
 
-### Weather
-- `/weather [location]` - Get current weather information
-  - Optional location parameter (defaults to Buffalo NY)
-  - Examples: "Buffalo", "New York", "Tokyo"
-
 ### Media Library
 - `/videos <query>` - Unified TV library browser and episode player with natural language understanding
   - **Browse mode**: "list the available tv shows", "how many episodes of friends?", "do we have breaking bad?"

@@ -25,7 +25,6 @@ export interface RateLimitResult {
 export const RATE_LIMITS: Record<string, RateLimitConfig> = {
   chat: { maxRequests: 20, windowSeconds: 60 },          // 20 requests per minute
   "web-search": { maxRequests: 10, windowSeconds: 60 },  // 10 searches per minute
-  weather: { maxRequests: 15, windowSeconds: 60 },       // 15 requests per minute
   videos: { maxRequests: 10, windowSeconds: 60 },        // 10 requests per minute
   "lock-pc": { maxRequests: 5, windowSeconds: 300 },     // 5 requests per 5 minutes
   "pc-restart": { maxRequests: 3, windowSeconds: 300 },  // 3 requests per 5 minutes
