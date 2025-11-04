@@ -1,7 +1,7 @@
 /**
- * Discord Command Registration Script for Core Bot
+ * Discord Command Registration Script for Unified CASIE Bot
  *
- * Run this script to register slash commands with Discord.
+ * Run this script to register ALL slash commands with Discord.
  * Make sure to set DISCORD_BOT_TOKEN and APPLICATION_ID before running.
  *
  * Usage:
@@ -34,8 +34,9 @@ const DISCORD_BOT_TOKEN = process.env.DISCORD_BOT_TOKEN || 'YOUR_BOT_TOKEN_HERE'
 const APPLICATION_ID = process.env.APPLICATION_ID || 'YOUR_APPLICATION_ID_HERE';
 
 const commands = [
+  // ========== CORE COMMANDS ==========
   {
-    name: 'ask',
+    name: 'chat',
     description: 'Chat with AI assistant',
     dm_permission: false,
     options: [
@@ -98,10 +99,60 @@ const commands = [
     description: 'Put your Windows PC to sleep with confirmation (requires CASIE Bridge)',
     dm_permission: false,
   },
+
+  // ========== SPOTIFY COMMANDS ==========
+  {
+    name: 'linkspotify',
+    description: 'Link your Spotify account to CASIE',
+    dm_permission: false,
+  },
+  {
+    name: 'play',
+    description: 'Search Spotify for tracks and play them',
+    dm_permission: false,
+    options: [
+      {
+        name: 'query',
+        description: 'Track name, artist, or search query',
+        type: 3, // STRING type
+        required: true,
+      },
+    ],
+  },
+  {
+    name: 'resume',
+    description: 'Resume or start playback on your Spotify',
+    dm_permission: false,
+  },
+  {
+    name: 'pause',
+    description: 'Pause your current Spotify playback',
+    dm_permission: false,
+  },
+  {
+    name: 'next',
+    description: 'Skip to the next track in your Spotify queue',
+    dm_permission: false,
+  },
+  {
+    name: 'previous',
+    description: 'Go back to the previous track on Spotify',
+    dm_permission: false,
+  },
+  {
+    name: 'nowplaying',
+    description: 'Show what you\'re currently listening to on Spotify',
+    dm_permission: false,
+  },
+  {
+    name: 'playlists',
+    description: 'View your Spotify playlists',
+    dm_permission: false,
+  },
 ];
 
 async function registerCommands() {
-  console.log('🤖 Registering Core Bot commands with Discord...\n');
+  console.log('🤖 Registering CASIE (Unified Bot) commands with Discord...\n');
 
   // Validate configuration
   if (DISCORD_BOT_TOKEN.includes('YOUR_') || APPLICATION_ID.includes('YOUR_')) {
@@ -127,13 +178,29 @@ async function registerCommands() {
 
     if (response.ok) {
       const data = await response.json();
-      console.log('✅ Successfully registered commands!\n');
-      console.log(`Registered ${data.length} command(s):`);
-      data.forEach((cmd) => {
+      console.log('✅ Successfully registered all commands!\n');
+      console.log(`Registered ${data.length} command(s):\n`);
+
+      // Group and display commands
+      const coreCommands = data.filter(cmd =>
+        ['chat', 'web-search', 'clear', 'videos', 'pc-lock', 'pc-restart', 'pc-shutdown', 'pc-sleep'].includes(cmd.name)
+      );
+      const spotifyCommands = data.filter(cmd =>
+        ['linkspotify', 'play', 'resume', 'pause', 'next', 'previous', 'nowplaying', 'playlists'].includes(cmd.name)
+      );
+
+      console.log('📌 Core Commands:');
+      coreCommands.forEach((cmd) => {
         console.log(`  /${cmd.name} - ${cmd.description}`);
       });
-      console.log('\n🎉 Commands should now be available in Discord!');
-      console.log('   (It may take a few minutes to propagate)\n');
+
+      console.log('\n🎵 Spotify Commands:');
+      spotifyCommands.forEach((cmd) => {
+        console.log(`  /${cmd.name} - ${cmd.description}`);
+      });
+
+      console.log('\n🎉 All commands registered successfully!');
+      console.log('   (It may take a few minutes to propagate in Discord)\n');
     } else {
       const errorText = await response.text();
       console.error('❌ Failed to register commands\n');

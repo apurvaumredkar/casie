@@ -1,0 +1,35 @@
+{
+	"name": "casie",
+	"version": "1.0.0",
+	"description": "CASIE - Context-Aware Small Intelligence on Edge. Unified Discord bot on Cloudflare Workers",
+	"private": true,
+	"type": "module",
+	"scripts": {
+		"deploy": "wrangler deploy",
+		"dev": "wrangler dev",
+		"start": "wrangler dev",
+		"build": "echo Skipping type check",
+		"test": "vitest",
+		"cf-typegen": "wrangler types"
+	},
+	"keywords": [
+		"discord",
+		"bot",
+		"cloudflare",
+		"workers",
+		"ai",
+		"spotify"
+	],
+	"author": "",
+	"license": "MIT",
+	"devDependencies": {
+		"@cloudflare/vitest-pool-workers": "^0.8.19",
+		"@cloudflare/workers-types": "^4.20241127.0",
+		"typescript": "^5.7.3",
+		"vitest": "~3.2.0",
+		"wrangler": "^4.45.1"
+	},
+	"dependencies": {
+		"dotenv": "^17.2.3"
+	}
+}

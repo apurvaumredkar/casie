@@ -2,6 +2,25 @@
 // CASIE Discord Worker  —  TypeScript version
 // ======================================================
 
+import * as STM from "./stm";
+import * as RateLimit from "./ratelimit";
+
+// Spotify command imports
+import { handleLinkSpotify } from './commands/link';
+import { handlePlay as handleSpotifyResume } from './commands/play';
+import { handlePause } from './commands/pause';
+import { handleNext } from './commands/next';
+import { handlePrevious } from './commands/previous';
+import { handleNowPlaying } from './commands/nowplaying';
+import { handlePlaylists } from './commands/playlists';
+import { handleSpotifySearch as handleSpotifyPlay } from './commands/search';
+import { exchangeCodeForTokens, verifySignedState } from './spotify/oauth';
+import { storeUserTokens, getUserTokens, isUserLinked } from './utils/storage';
+import { executeAgenticQuery } from './llm/agent';
+import { SpotifyClient } from './spotify/client';
+import { isTokenExpired, refreshAccessToken } from './spotify/oauth';
+import { checkRateLimit as checkSpotifyRateLimit, recordRequest, formatCooldown } from './utils/ratelimit';
+
 // ========== SYSTEM PROMPT ==========
 const SYSTEM_PROMPT = `
 <assistant>
@@ -53,12 +72,20 @@ interface Env {
   BRAVE_API_KEY: string;
   AI: Ai; // Cloudflare AI binding
   DB: D1Database; // D1 database binding for episodes
-  CASIE_BRIDGE_KV: KVNamespace; // KV namespace for CASIE Bridge tunnel URL
+  BRIDGE_KV: KVNamespace; // KV namespace for CASIE Bridge tunnel URL
+  STM: KVNamespace; // KV namespace for Short-Term Memory
+  SPOTIFY_TOKENS: KVNamespace; // KV namespace for Spotify OAuth tokens
   CASIE_BRIDGE_API_TOKEN: string; // Bearer token for CASIE Bridge authentication
   // Media server tunnel configuration
   MEDIA_TUNNEL_URL: string; // Cloudflare Tunnel URL (e.g., https://<uuid>.cfargotunnel.com)
   MEDIA_API_TOKEN: string; // Bearer token for tunnel authentication
   YOUR_DISCORD_ID: string; // Your Discord user ID for access control
+  // Spotify OAuth configuration
+  SPOTIFY_CLIENT_ID: string;
+  SPOTIFY_CLIENT_SECRET: string;
+  SPOTIFY_REDIRECT_URI: string;
+  SPOTIFY_STATE_SECRET: string; // Private secret for OAuth state signing
+  OPENROUTER_MODEL?: string;
 }
 
 interface DiscordOption {
@@ -107,8 +134,26 @@ export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
 
+    // Handle Spotify OAuth callback
+    if (url.pathname === '/oauth/callback' && request.method === 'GET') {
+      return handleOAuthCallback(url, env);
+    }
+
+    // Health check endpoint
+    if (url.pathname === '/health' && request.method === 'GET') {
+      return new Response(JSON.stringify({ status: 'ok', bot: 'CASIE' }), {
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    // GET request to root returns a simple message
+    if (url.pathname === '/' && request.method === 'GET') {
+      return new Response('CASIE - Context-Aware Small Intelligence on Edge', { status: 200 });
+    }
+
+    // Only POST requests past this point (Discord interactions)
     if (request.method !== "POST")
-      return new Response("CASIE is running on Discord", { status: 200 });
+      return new Response("Not Found", { status: 404 });
 
     const signature = request.headers.get("x-signature-ed25519");
     const timestamp = request.headers.get("x-signature-timestamp");
@@ -135,7 +180,7 @@ export default {
       const cmd = interaction.data?.name;
 
       switch (cmd) {
-        case "ask":
+        case "chat":
           // Defer response and process in background
           ctx.waitUntil(handleAskDeferred(interaction, env));
           return json({ type: DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE });
@@ -175,6 +220,25 @@ export default {
         case "pc-sleep":
           // Show confirmation prompt (no deferral needed - immediate response)
           return handlePCSleepCommand(interaction, env);
+
+        // Spotify commands
+        case "linkspotify":
+          return await handleLinkSpotify(interaction, env);
+        case "play":
+          return await handleSpotifyPlay(interaction, env);
+        case "resume":
+          return await handleSpotifyResume(interaction, env);
+        case "pause":
+          return await handlePause(interaction, env);
+        case "next":
+          return await handleNext(interaction, env);
+        case "previous":
+          return await handlePrevious(interaction, env);
+        case "nowplaying":
+          return await handleNowPlaying(interaction, env);
+        case "playlists":
+          return await handlePlaylists(interaction, env);
+
         default:
           return json({
             type: CHANNEL_MESSAGE_WITH_SOURCE,
@@ -238,24 +302,73 @@ export default {
 
 // ========== COMMAND HANDLERS ==========
 
+// Helper: Check rate limit before processing command
+async function checkCommandRateLimit(
+  interaction: DiscordInteraction,
+  env: Env,
+  command: string
+): Promise<boolean> {
+  const userId = interaction.member?.user?.id || interaction.user?.id;
+  if (!userId) return true; // Allow if no user ID (shouldn't happen)
+
+  const result = await RateLimit.checkRateLimit(env.STM, command, userId);
+
+  if (!result.allowed) {
+    const message = RateLimit.formatRateLimitMessage(command, result);
+    await sendFollowup(interaction, message);
+    return false;
+  }
+
+  return true;
+}
+
 async function handleAskDeferred(
   interaction: DiscordInteraction,
   env: Env
 ): Promise<void> {
   try {
+    // Check rate limit
+    const allowed = await checkCommandRateLimit(interaction, env, "chat");
+    if (!allowed) return;
+
     const userPrompt =
       interaction.data?.options?.[0]?.value?.trim() ||
       "please provide a query next time.";
 
+    // Extract user ID for STM lookup
+    const userId = interaction.member?.user?.id || interaction.user?.id;
+    const guildId = interaction.guild_id;
+    const channelId = interaction.channel_id;
+
+    // Load STM to get conversational context
+    const stm = await STM.loadSTM(env.STM, guildId, channelId, userId);
+    const contextFromSTM = STM.buildContextFromSTM(stm);
+
+    // Build enhanced system prompt with STM context
+    const enhancedSystemPrompt = SYSTEM_PROMPT + contextFromSTM;
+
+    // Call LLM with context
     const llmResponse = await callLLM(
       env.AI,
       env.OPENROUTER_API_KEY,
-      SYSTEM_PROMPT,
+      enhancedSystemPrompt,
       userPrompt,
       800
     );
 
     const replyText = llmResponse || "i was unable to generate a response.";
+
+    // Update STM with this interaction
+    await STM.updateSTM(
+      env.STM,
+      env.AI,
+      env.OPENROUTER_API_KEY,
+      userPrompt,
+      replyText,
+      guildId,
+      channelId,
+      userId
+    );
 
     await sendFollowup(interaction, replyText);
   } catch (err: any) {
@@ -268,6 +381,10 @@ async function handleSearchDeferred(
   env: Env
 ): Promise<void> {
   try {
+    // Check rate limit
+    const allowed = await checkCommandRateLimit(interaction, env, "web-search");
+    if (!allowed) return;
+
     const query = interaction.data?.options?.[0]?.value?.trim();
     if (!query) {
       await sendFollowup(interaction, "Please provide something to search for.");
@@ -300,6 +417,16 @@ async function handleClearDeferred(
 ): Promise<void> {
   try {
     const channelId = interaction.channel_id;
+    const userId = interaction.member?.user?.id || interaction.user?.id;
+    const guildId = interaction.guild_id;
+
+    // Clear Short-Term Memory for this user
+    if (userId) {
+      const stmKey = STM.getSTMKey(guildId, channelId, userId);
+      await env.STM.delete(stmKey);
+      console.log(`[handleClearDeferred] Cleared STM for user ${userId}`);
+    }
+
     if (!channelId) {
       // Delete the initial deferred response silently
       await deleteOriginalMessage(interaction);
@@ -929,6 +1056,10 @@ async function handleVideosDeferred(
 ): Promise<void> {
   const startTime = Date.now();
   try {
+    // Check rate limit
+    const allowed = await checkCommandRateLimit(interaction, env, "videos");
+    if (!allowed) return;
+
     console.log(`[handleVideosDeferred] Starting /videos command`);
 
     // Get user query
@@ -939,7 +1070,7 @@ async function handleVideosDeferred(
     console.log(`[handleVideosDeferred] Query: "${userQuery}"`);
 
     // Fetch tunnel URL from KV
-    const tunnelUrl = await env.CASIE_BRIDGE_KV.get("current_tunnel_url");
+    const tunnelUrl = await env.BRIDGE_KV.get("current_tunnel_url");
     if (!tunnelUrl) {
       console.log(`[handleVideosDeferred] Tunnel URL not found in KV`);
       await sendFollowup(
@@ -1245,7 +1376,11 @@ async function handlePCLockConfirmed(
   env: Env
 ): Promise<void> {
   try {
-    const tunnelUrl = await env.CASIE_BRIDGE_KV.get("current_tunnel_url");
+    // Check rate limit
+    const allowed = await checkCommandRateLimit(interaction, env, "lock-pc");
+    if (!allowed) return;
+
+    const tunnelUrl = await env.BRIDGE_KV.get("current_tunnel_url");
     if (!tunnelUrl) {
       await sendFollowup(
         interaction,
@@ -1327,7 +1462,7 @@ async function handlePCRestartConfirmed(
   env: Env
 ): Promise<void> {
   try {
-    const tunnelUrl = await env.CASIE_BRIDGE_KV.get("current_tunnel_url");
+    const tunnelUrl = await env.BRIDGE_KV.get("current_tunnel_url");
     if (!tunnelUrl) {
       await sendFollowup(
         interaction,
@@ -1409,7 +1544,7 @@ async function handlePCShutdownConfirmed(
   env: Env
 ): Promise<void> {
   try {
-    const tunnelUrl = await env.CASIE_BRIDGE_KV.get("current_tunnel_url");
+    const tunnelUrl = await env.BRIDGE_KV.get("current_tunnel_url");
     if (!tunnelUrl) {
       await sendFollowup(
         interaction,
@@ -1491,7 +1626,7 @@ async function handlePCSleepConfirmed(
   env: Env
 ): Promise<void> {
   try {
-    const tunnelUrl = await env.CASIE_BRIDGE_KV.get("current_tunnel_url");
+    const tunnelUrl = await env.BRIDGE_KV.get("current_tunnel_url");
     if (!tunnelUrl) {
       await sendFollowup(
         interaction,
@@ -1910,4 +2045,243 @@ function formatLibraryStats(mediaData: any): string {
 **Movies:** ${moviesCount}
 
 Last updated: ${lastUpdated}`;
+}
+
+// ========== SPOTIFY NATURAL LANGUAGE HANDLER ==========
+
+/**
+ * Handle natural language Spotify command with LLM
+ */
+async function handleSpotifyNL(
+  interaction: DiscordInteraction,
+  env: Env,
+  ctx: ExecutionContext
+): Promise<Response> {
+  const userId = interaction.member?.user?.id || interaction.user?.id;
+
+  if (!userId) {
+    return json({
+      type: CHANNEL_MESSAGE_WITH_SOURCE,
+      data: { content: '❌ Could not identify user.' },
+      flags: 64,
+    });
+  }
+
+  // Check if user has linked Spotify
+  if (!(await isUserLinked(env.SPOTIFY_TOKENS, userId))) {
+    return json({
+      type: CHANNEL_MESSAGE_WITH_SOURCE,
+      data: { content: '❌ You need to link your Spotify account first! Use `/linkspotify` to get started.' },
+      flags: 64,
+    });
+  }
+
+  // Check rate limit
+  const rateLimit = checkSpotifyRateLimit(userId);
+  if (rateLimit.isLimited) {
+    return json({
+      type: CHANNEL_MESSAGE_WITH_SOURCE,
+      data: { content: `⏱️ Please wait ${formatCooldown(rateLimit.remainingMs)} before using /spotify again.` },
+      flags: 64,
+    });
+  }
+
+  // Get query from command options
+  const query = interaction.data?.options?.[0]?.value?.trim() as string;
+
+  if (!query || query.length === 0) {
+    return json({
+      type: CHANNEL_MESSAGE_WITH_SOURCE,
+      data: { content: '❌ Please provide a query. Example: `/spotify play some jazz`' },
+      flags: 64,
+    });
+  }
+
+  // Record request for rate limiting
+  recordRequest(userId);
+
+  // Send deferred response (LLM call may take a few seconds)
+  ctx.waitUntil(
+    (async () => {
+      try {
+        // Get user tokens from KV
+        let tokens = await getUserTokens(env.SPOTIFY_TOKENS, userId);
+
+        if (!tokens) {
+          await sendFollowup(
+            interaction,
+            '❌ Your session has expired. Please relink with `/linkspotify`.'
+          );
+          return;
+        }
+
+        // Refresh if expired
+        if (isTokenExpired(tokens)) {
+          try {
+            tokens = await refreshAccessToken(
+              tokens.refresh_token,
+              env.SPOTIFY_CLIENT_ID,
+              env.SPOTIFY_CLIENT_SECRET
+            );
+            await storeUserTokens(env.SPOTIFY_TOKENS, userId, tokens);
+          } catch (error) {
+            await sendFollowup(
+              interaction,
+              '❌ Failed to refresh your Spotify token. Please relink with `/linkspotify`.'
+            );
+            return;
+          }
+        }
+
+        // Execute query with agentic loop
+        const client = new SpotifyClient(tokens.access_token);
+        const agentResult = await executeAgenticQuery(query, client, env, {
+          maxIterations: 3,
+          enableRetry: true,
+          enableContext: false, // Context not implemented yet
+        });
+
+        // Send result to Discord
+        await sendFollowup(interaction, agentResult.message);
+      } catch (error) {
+        console.error('Spotify NL command error:', error);
+        await sendFollowup(
+          interaction,
+          '❌ An error occurred while processing your request. Please try again.'
+        );
+      }
+    })()
+  );
+
+  return json({ type: DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE });
+}
+
+// ========== SPOTIFY OAUTH CALLBACK ==========
+
+/**
+ * Handle Spotify OAuth callback
+ */
+async function handleOAuthCallback(url: URL, env: Env): Promise<Response> {
+  const code = url.searchParams.get('code');
+  const state = url.searchParams.get('state');
+  const error = url.searchParams.get('error');
+
+  // Handle user denying authorization
+  if (error) {
+    return new Response(
+      htmlResponse(
+        '❌ Authorization Denied',
+        'You denied access to your Spotify account. Please try again if you want to use CASIE Spotify.'
+      ),
+      { headers: { 'Content-Type': 'text/html' } }
+    );
+  }
+
+  // Validate required parameters
+  if (!code || !state) {
+    return new Response(
+      htmlResponse('❌ Invalid Callback', 'Missing authorization code or state.'),
+      { status: 400, headers: { 'Content-Type': 'text/html' } }
+    );
+  }
+
+  // Verify signed state (stateless - no storage lookup needed)
+  const stateData = await verifySignedState(state, env.SPOTIFY_STATE_SECRET);
+
+  if (!stateData) {
+    return new Response(
+      htmlResponse(
+        '❌ Invalid or Expired State',
+        'The authorization request has expired or is invalid. Please try linking your account again with /linkspotify'
+      ),
+      { status: 400, headers: { 'Content-Type': 'text/html' } }
+    );
+  }
+
+  try {
+    // Exchange authorization code for tokens
+    const tokens = await exchangeCodeForTokens(
+      code,
+      env.SPOTIFY_CLIENT_ID,
+      env.SPOTIFY_CLIENT_SECRET,
+      env.SPOTIFY_REDIRECT_URI
+    );
+
+    // Store tokens for the user in KV
+    await storeUserTokens(env.SPOTIFY_TOKENS, stateData.userId, tokens);
+
+    return new Response(
+      htmlResponse(
+        '✅ Spotify Account Linked!',
+        'Your Spotify account has been successfully linked to CASIE. You can now use commands like /play, /pause, /next, and more in Discord!'
+      ),
+      { headers: { 'Content-Type': 'text/html' } }
+    );
+  } catch (error: any) {
+    console.error('[OAuth] Token exchange error:', error.message);
+    return new Response(
+      htmlResponse(
+        '❌ Authorization Failed',
+        'Failed to complete the authorization process. Please try linking your account again.'
+      ),
+      { status: 500, headers: { 'Content-Type': 'text/html' } }
+    );
+  }
+}
+
+/**
+ * Generate a simple HTML response for OAuth callbacks
+ */
+function htmlResponse(title: string, message: string): string {
+  return `
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>${title}</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      min-height: 100vh;
+      margin: 0;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      color: #333;
+    }
+    .container {
+      background: white;
+      padding: 3rem;
+      border-radius: 12px;
+      box-shadow: 0 10px 40px rgba(0,0,0,0.2);
+      max-width: 500px;
+      text-align: center;
+    }
+    h1 {
+      font-size: 2rem;
+      margin: 0 0 1rem 0;
+    }
+    p {
+      font-size: 1.1rem;
+      line-height: 1.6;
+      color: #555;
+    }
+    .close-info {
+      margin-top: 2rem;
+      font-size: 0.9rem;
+      color: #999;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>${title}</h1>
+    <p>${message}</p>
+    <div class="close-info">You can close this window and return to Discord.</div>
+  </div>
+</body>
+</html>
+  `.trim();
 }
