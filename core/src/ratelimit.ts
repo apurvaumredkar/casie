@@ -110,10 +110,13 @@ export async function checkRateLimit(
 
   // Increment counter
   const newCount = record.count + 1;
+  const remainingTtl = config.windowSeconds - elapsed;
+  // KV requires TTL to be at least 60 seconds
+  const safeTtl = Math.max(60, remainingTtl);
   await kv.put(
     key,
     JSON.stringify({ count: newCount, startTime: record.startTime }),
-    { expirationTtl: config.windowSeconds - elapsed }
+    { expirationTtl: safeTtl }
   );
 
   return {

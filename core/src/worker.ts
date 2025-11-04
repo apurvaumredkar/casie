@@ -326,12 +326,15 @@ async function handleAskDeferred(
   interaction: DiscordInteraction,
   env: Env
 ): Promise<void> {
+  let llmResponse: string | null = null;
+  let userPrompt = "";
+
   try {
     // Check rate limit
     const allowed = await checkCommandRateLimit(interaction, env, "chat");
     if (!allowed) return;
 
-    const userPrompt =
+    userPrompt =
       interaction.data?.options?.[0]?.value?.trim() ||
       "please provide a query next time.";
 
@@ -341,38 +344,60 @@ async function handleAskDeferred(
     const channelId = interaction.channel_id;
 
     // Load STM to get conversational context
-    const stm = await STM.loadSTM(env.STM, guildId, channelId, userId);
-    const contextFromSTM = STM.buildContextFromSTM(stm);
+    let stm: STM.STMEntry | null = null;
+    let contextFromSTM = "";
+
+    try {
+      stm = await STM.loadSTM(env.STM, guildId, channelId, userId);
+      contextFromSTM = STM.buildContextFromSTM(stm);
+    } catch (err) {
+      console.error("Failed to load STM, continuing without memory:", err);
+      // Continue without STM - conversation still works
+    }
 
     // Build enhanced system prompt with STM context
     const enhancedSystemPrompt = SYSTEM_PROMPT + contextFromSTM;
 
     // Call LLM with context
-    const llmResponse = await callLLM(
-      env.AI,
-      env.OPENROUTER_API_KEY,
-      enhancedSystemPrompt,
-      userPrompt,
-      800
-    );
+    try {
+      llmResponse = await callLLM(
+        env.AI,
+        env.OPENROUTER_API_KEY,
+        enhancedSystemPrompt,
+        userPrompt,
+        800
+      );
+    } catch (err) {
+      console.error("LLM call failed:", err);
+      await sendFollowup(interaction, "Sorry, I'm having trouble connecting to my AI backend. Please try again in a moment.");
+      return;
+    }
 
     const replyText = llmResponse || "i was unable to generate a response.";
 
-    // Update STM with this interaction
-    await STM.updateSTM(
-      env.STM,
-      env.AI,
-      env.OPENROUTER_API_KEY,
-      userPrompt,
-      replyText,
-      guildId,
-      channelId,
-      userId
-    );
-
+    // Send response first (user gets their answer)
     await sendFollowup(interaction, replyText);
+
+    // Update STM in background (don't block on this)
+    // If this fails, the user already got their response
+    try {
+      await STM.updateSTM(
+        env.STM,
+        env.AI,
+        env.OPENROUTER_API_KEY,
+        userPrompt,
+        replyText,
+        guildId,
+        channelId,
+        userId
+      );
+    } catch (err) {
+      console.error("Failed to update STM (non-critical):", err);
+      // Don't propagate error - user already has their response
+    }
   } catch (err: any) {
-    await sendFollowup(interaction, `Error: ${err.message}`);
+    console.error("Unexpected error in handleAskDeferred:", err);
+    await sendFollowup(interaction, `An unexpected error occurred. Please try again.`);
   }
 }
 

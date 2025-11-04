@@ -36,23 +36,25 @@ export interface STMEntry {
 
 // ========== CONSTANTS ==========
 
-const STM_TTL_SECONDS = 7200; // 2 hours
-const MAX_MESSAGES = 10; // Keep last 10 messages
-const SUMMARIZE_THRESHOLD = 6; // Summarize when we have 6+ messages
+export const STM_TTL_SECONDS = 7200; // 2 hours
+export const MAX_MESSAGES = 10; // Keep last 10 messages
+export const SUMMARIZE_THRESHOLD = 6; // Summarize when we have 6+ messages
 
 // ========== KEY GENERATION ==========
 
 /**
  * Generate a unique KV key for STM storage.
- * Format: stm:{guild_id}:{channel_id}:{user_id}
+ * Format: stm:{user_id}:{channel_id}
+ *
+ * Note: We use user_id + channel_id to scope memory per-user per-channel.
+ * Guild is not included since DMs don't have guilds, and channel_id is already unique.
  *
  * Exported for use in clearing memory manually.
  */
 export function getSTMKey(guildId?: string, channelId?: string, userId?: string): string {
-  const guild = guildId || "dm";
-  const channel = channelId || "default";
   const user = userId || "unknown";
-  return `stm:${guild}:${channel}:${user}`;
+  const channel = channelId || "default";
+  return `stm:${user}:${channel}`;
 }
 
 // ========== LOAD/SAVE ==========
@@ -98,12 +100,17 @@ export async function saveSTM(
   // Update timestamp
   entry.updated = Date.now();
 
-  // Save with absolute expiration timestamp instead of TTL
-  // Using Math.floor(Date.now() / 1000) to get Unix timestamp in seconds
-  const expirationTimestamp = Math.floor(Date.now() / 1000) + STM_TTL_SECONDS;
+  // Save with TTL (Time To Live) in seconds
+  // Note: KV requires TTL to be at least 60 seconds
+  // We use expirationTtl instead of expiration to avoid clock sync issues
+  console.log(`[STM DEBUG] About to save to KV with TTL: ${STM_TTL_SECONDS} seconds`);
+  console.log(`[STM DEBUG] Key: ${key}, Entry size: ${JSON.stringify(entry).length} bytes`);
+
   await kv.put(key, JSON.stringify(entry), {
-    expiration: expirationTimestamp,
+    expirationTtl: STM_TTL_SECONDS,
   });
+
+  console.log(`[STM DEBUG] Successfully saved to KV with TTL: ${STM_TTL_SECONDS}`);
 }
 
 /**
@@ -232,6 +239,9 @@ Keep it extremely concise (under 50 words).`;
 /**
  * Add a new message to STM and update facts/summary.
  * This is the main function called after each interaction.
+ *
+ * Error handling: If save fails, will retry once. If retry fails, logs error but doesn't throw
+ * to avoid breaking the user's interaction flow.
  */
 export async function updateSTM(
   kv: KVNamespace,
@@ -243,36 +253,60 @@ export async function updateSTM(
   channelId?: string,
   userId?: string
 ): Promise<STMEntry> {
-  // Load existing STM or create new
-  let stm = await loadSTM(kv, guildId, channelId, userId);
-  if (!stm) {
-    stm = createEmptySTM();
+  try {
+    // Load existing STM or create new
+    let stm = await loadSTM(kv, guildId, channelId, userId);
+    if (!stm) {
+      stm = createEmptySTM();
+    }
+
+    // Add new messages
+    const timestamp = Date.now();
+    stm.messages.push(
+      { role: "user", content: userMessage, timestamp },
+      { role: "assistant", content: assistantMessage, timestamp }
+    );
+
+    // Extract facts from user message
+    stm.facts = extractFacts(userMessage, stm.facts);
+
+    // Summarize conversation when we have enough messages
+    // Re-summarize every time we hit MAX_MESSAGES to keep it fresh
+    const shouldSummarize =
+      (stm.messages.length >= SUMMARIZE_THRESHOLD && !stm.summary) || // First summary
+      (stm.messages.length >= MAX_MESSAGES); // Refresh summary when at capacity
+
+    if (shouldSummarize) {
+      try {
+        stm.summary = await summarizeConversation(stm.messages, ai, openRouterKey);
+      } catch (err) {
+        console.error("Failed to generate summary, continuing without it:", err);
+        // Continue without summary - not critical
+      }
+    }
+
+    // Save updated STM with retry
+    try {
+      await saveSTM(kv, stm, guildId, channelId, userId);
+    } catch (err) {
+      console.error("Failed to save STM, retrying once:", err);
+      // Retry once
+      try {
+        await saveSTM(kv, stm, guildId, channelId, userId);
+        console.log("STM save retry succeeded");
+      } catch (retryErr) {
+        console.error("STM save retry also failed:", retryErr);
+        // Don't throw - we don't want to break the user's interaction
+        // The conversation will continue but without memory persistence
+      }
+    }
+
+    return stm;
+  } catch (err) {
+    console.error("Critical error in updateSTM:", err);
+    // Return empty STM to avoid breaking the flow
+    return createEmptySTM();
   }
-
-  // Add new messages
-  const timestamp = Date.now();
-  stm.messages.push(
-    { role: "user", content: userMessage, timestamp },
-    { role: "assistant", content: assistantMessage, timestamp }
-  );
-
-  // Extract facts from user message
-  stm.facts = extractFacts(userMessage, stm.facts);
-
-  // Summarize if we have enough messages
-  if (stm.messages.length >= SUMMARIZE_THRESHOLD && !stm.summary) {
-    stm.summary = await summarizeConversation(stm.messages, ai, openRouterKey);
-  }
-
-  // Update summary periodically (every 10 messages)
-  if (stm.messages.length >= MAX_MESSAGES) {
-    stm.summary = await summarizeConversation(stm.messages, ai, openRouterKey);
-  }
-
-  // Save updated STM
-  await saveSTM(kv, stm, guildId, channelId, userId);
-
-  return stm;
 }
 
 // ========== CONTEXT BUILDING ==========
@@ -280,6 +314,10 @@ export async function updateSTM(
 /**
  * Build a context string from STM for injection into system prompt.
  * This is what gets prepended to the system prompt to give the model memory.
+ *
+ * Strategy:
+ * - If we have a summary: Use summary + only the last 2 exchanges (to avoid duplication)
+ * - If no summary yet: Use all recent messages (up to last 6)
  */
 export function buildContextFromSTM(stm: STMEntry | null): string {
   if (!stm || (stm.messages.length === 0 && !stm.summary && !stm.facts.userName)) {
@@ -298,9 +336,13 @@ export function buildContextFromSTM(stm: STMEntry | null): string {
     parts.push(`<known_facts>\n- User's name: ${stm.facts.userName}\n</known_facts>`);
   }
 
-  // Add recent messages (last 3 turns)
+  // Add recent messages
+  // If we have a summary, only include the VERY latest exchanges (last 2 turns = 4 messages)
+  // to avoid duplicating what's already in the summary
+  // If no summary, include more context (last 3 turns = 6 messages)
   if (stm.messages.length > 0) {
-    const recentMessages = stm.messages.slice(-6); // Last 3 exchanges (6 messages)
+    const numMessagesToInclude = stm.summary ? 4 : 6;
+    const recentMessages = stm.messages.slice(-numMessagesToInclude);
     const formatted = recentMessages
       .map((msg) => `${msg.role === "user" ? "User" : "You"}: ${msg.content}`)
       .join("\n");
