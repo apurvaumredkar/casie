@@ -67,6 +67,11 @@ const DEFAULT_TEMPERATURE = 0.4;
 const PDF_TEMPERATURE = 0.3;  // Lower for focused PDF analysis
 const PDF_MAX_TOKENS = 2048;  // Higher for document analysis
 
+// Discord message limits
+const MAX_MESSAGE_LENGTH = 2000;        // Max characters in regular message
+const MAX_EMBED_DESCRIPTION = 4096;     // Max characters in embed description
+const MAX_TOTAL_EMBED = 6000;           // Max total characters across all embeds
+
 // ========== TYPES ==========
 interface Env {
   DISCORD_PUBLIC_KEY: string;
@@ -138,6 +143,15 @@ interface DiscordResponse {
     components?: any[]; // Discord message components (buttons, etc.)
   };
   flags?: number; // Message flags (e.g., 64 for ephemeral)
+}
+
+interface DiscordEmbed {
+  title?: string;
+  description?: string;
+  color?: number;
+  footer?: {
+    text: string;
+  };
 }
 
 interface BraveResult {
@@ -431,6 +445,11 @@ async function handlePdfDeferred(
     const allowed = await checkCommandRateLimit(interaction, env, "pdf");
     if (!allowed) return;
 
+    // Extract user/channel IDs for STM
+    const userId = interaction.member?.user?.id || interaction.user?.id;
+    const guildId = interaction.guild_id;
+    const channelId = interaction.channel_id;
+
     // Extract attachment from options
     const fileOption = interaction.data?.options?.find(opt => opt.name === 'file');
     if (!fileOption) {
@@ -490,11 +509,35 @@ ${userQuestion ? `User Question: ${userQuestion}` : 'Please provide a comprehens
 
     const replyText = llmResponse || 'Unable to analyze document.';
 
-    // Send formatted response
-    await sendFollowup(
+    // Send formatted response using intelligent length-based routing
+    await sendLongResponse(
       interaction,
-      `📄 **PDF Analysis: ${attachment.filename}**\n\n${replyText}`
+      `PDF Analysis: ${attachment.filename}`,
+      replyText
     );
+
+    // Update STM in background (don't block on this)
+    // Store the user's intent and the analysis result for future reference
+    try {
+      // Create a user-friendly representation of the query
+      const userQueryForSTM = userQuestion
+        ? `Analyze PDF "${attachment.filename}" with question: ${userQuestion}`
+        : `Analyze PDF "${attachment.filename}"`;
+
+      await STM.updateSTM(
+        env.STM,
+        env.AI,
+        env.OPENROUTER_API_KEY,
+        userQueryForSTM,
+        replyText,
+        guildId,
+        channelId,
+        userId
+      );
+    } catch (err) {
+      console.error("Failed to update STM (non-critical):", err);
+      // Don't propagate error - user already has their response
+    }
 
   } catch (error: any) {
     console.error('PDF analysis error:', error);
@@ -675,6 +718,154 @@ async function sendFollowup(
       console.error(`[sendFollowup] Failed to send followup message after ${maxRetries} attempts:`, error);
       throw error;
     }
+  }
+}
+
+// ---- Send followup with Discord embed ----
+async function sendFollowupEmbed(
+  interaction: DiscordInteraction,
+  embed: DiscordEmbed,
+  maxRetries: number = 3
+): Promise<void> {
+  const url = `https://discord.com/api/v10/webhooks/${interaction.application_id}/${interaction.token}`;
+
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    try {
+      if (attempt > 0) {
+        const delayMs = Math.min(1000 * Math.pow(2, attempt - 1), 5000);
+        await new Promise(resolve => setTimeout(resolve, delayMs));
+      }
+
+      const response = await fetch(url, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          embeds: [embed],
+        }),
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text().catch(() => "Unknown error");
+        console.error(`[sendFollowupEmbed] Discord API returned ${response.status}: ${errorText}`);
+
+        if (attempt === maxRetries - 1) {
+          throw new Error(`Failed after ${maxRetries} attempts: ${errorText}`);
+        }
+        continue;
+      }
+
+      return; // Success
+    } catch (error: any) {
+      if (attempt === maxRetries - 1) {
+        console.error(`[sendFollowupEmbed] Failed after ${maxRetries} attempts:`, error);
+        throw error;
+      }
+    }
+  }
+}
+
+// ---- Split text into chunks at natural boundaries ----
+function splitIntoChunks(text: string, maxLength: number): string[] {
+  if (text.length <= maxLength) {
+    return [text];
+  }
+
+  const chunks: string[] = [];
+  let remainingText = text;
+
+  while (remainingText.length > 0) {
+    if (remainingText.length <= maxLength) {
+      chunks.push(remainingText);
+      break;
+    }
+
+    // Try to split at paragraph boundary (double newline)
+    let splitIndex = remainingText.lastIndexOf('\n\n', maxLength);
+
+    // Fall back to single newline
+    if (splitIndex === -1 || splitIndex < maxLength / 2) {
+      splitIndex = remainingText.lastIndexOf('\n', maxLength);
+    }
+
+    // Fall back to space (word boundary)
+    if (splitIndex === -1 || splitIndex < maxLength / 2) {
+      splitIndex = remainingText.lastIndexOf(' ', maxLength);
+    }
+
+    // Last resort: hard cut at maxLength
+    if (splitIndex === -1 || splitIndex < maxLength / 2) {
+      splitIndex = maxLength;
+    }
+
+    chunks.push(remainingText.substring(0, splitIndex).trim());
+    remainingText = remainingText.substring(splitIndex).trim();
+  }
+
+  return chunks;
+}
+
+// ---- Send long response with intelligent routing ----
+async function sendLongResponse(
+  interaction: DiscordInteraction,
+  title: string,
+  content: string
+): Promise<void> {
+  const contentLength = content.length;
+
+  // Strategy 1: Single embed (<4000 chars)
+  if (contentLength < MAX_EMBED_DESCRIPTION - 100) { // Leave room for formatting
+    const embed: DiscordEmbed = {
+      title: title,
+      description: content,
+      color: 0x5865F2, // Discord blurple
+      footer: {
+        text: `${contentLength} characters`,
+      },
+    };
+    await sendFollowupEmbed(interaction, embed);
+    return;
+  }
+
+  // Strategy 2: Multiple embeds (4000-6000 chars)
+  if (contentLength < MAX_TOTAL_EMBED) {
+    const chunks = splitIntoChunks(content, MAX_EMBED_DESCRIPTION - 200);
+
+    // Send first embed with title
+    const firstEmbed: DiscordEmbed = {
+      title: title,
+      description: chunks[0],
+      color: 0x5865F2,
+    };
+    await sendFollowupEmbed(interaction, firstEmbed);
+
+    // Send remaining embeds
+    for (let i = 1; i < chunks.length; i++) {
+      await new Promise(resolve => setTimeout(resolve, 500)); // Rate limit safety
+      const embed: DiscordEmbed = {
+        description: chunks[i],
+        color: 0x5865F2,
+        footer: i === chunks.length - 1 ? {
+          text: `${contentLength} characters total`,
+        } : undefined,
+      };
+      await sendFollowupEmbed(interaction, embed);
+    }
+    return;
+  }
+
+  // Strategy 3: Chunked plain text messages (>6000 chars)
+  const chunks = splitIntoChunks(content, MAX_MESSAGE_LENGTH - 100);
+  const totalParts = chunks.length;
+
+  for (let i = 0; i < chunks.length; i++) {
+    await new Promise(resolve => setTimeout(resolve, 500)); // Rate limit safety
+
+    const partIndicator = totalParts > 1 ? `📄 **${title}** (Part ${i + 1}/${totalParts})\n\n` : `📄 **${title}**\n\n`;
+    const message = partIndicator + chunks[i];
+
+    await sendFollowup(interaction, message);
   }
 }
 
