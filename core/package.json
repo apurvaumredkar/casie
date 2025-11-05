@@ -30,6 +30,7 @@
 		"wrangler": "^4.45.1"
 	},
 	"dependencies": {
-		"dotenv": "^17.2.3"
+		"dotenv": "^17.2.3",
+		"unpdf": "^1.4.0"
 	}
 }

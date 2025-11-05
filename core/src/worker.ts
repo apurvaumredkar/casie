@@ -61,8 +61,11 @@ const DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE = 5;
 
 // LLM config constants
 const CF_AI_MODEL = "@cf/meta/llama-3.2-3b-instruct"; // Cloudflare AI primary model
+const CF_AI_PDF_MODEL = "@cf/meta/llama-4-scout-17b-16e-instruct"; // PDF analysis model
 const OPENROUTER_MODEL = "meta-llama/llama-4-scout:free"; // OpenRouter fallback
 const DEFAULT_TEMPERATURE = 0.4;
+const PDF_TEMPERATURE = 0.3;  // Lower for focused PDF analysis
+const PDF_MAX_TOKENS = 2048;  // Higher for document analysis
 
 // ========== TYPES ==========
 interface Env {
@@ -90,7 +93,16 @@ interface Env {
 
 interface DiscordOption {
   name: string;
-  value: string;
+  value: string | number | boolean; // Support attachment IDs (strings) and other types
+}
+
+interface DiscordAttachment {
+  id: string;
+  filename: string;
+  size: number;
+  url: string;
+  content_type: string;
+  proxy_url: string;
 }
 
 interface DiscordInteraction {
@@ -103,14 +115,19 @@ interface DiscordInteraction {
   data?: {
     name: string;
     options?: DiscordOption[];
+    resolved?: {
+      attachments?: Record<string, DiscordAttachment>;
+    };
   };
   member?: {
-    user?: {
+    user: {
       id: string;
+      username: string;
     };
   };
   user?: {
     id: string;
+    username: string;
   };
 }
 
@@ -192,6 +209,10 @@ export default {
           // Process silently in background (no response)
           ctx.waitUntil(handleClearDeferred(interaction, env));
           return json({ type: DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE, flags: 64 }); // Ephemeral, will be deleted
+        case "pdf":
+          // Defer response and process PDF in background
+          ctx.waitUntil(handlePdfDeferred(interaction, env));
+          return json({ type: DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE });
         case "media":
           // Defer response and process in background
           ctx.waitUntil(handleMediaDeferred(interaction, env));
@@ -398,6 +419,89 @@ async function handleAskDeferred(
   } catch (err: any) {
     console.error("Unexpected error in handleAskDeferred:", err);
     await sendFollowup(interaction, `An unexpected error occurred. Please try again.`);
+  }
+}
+
+async function handlePdfDeferred(
+  interaction: DiscordInteraction,
+  env: Env
+): Promise<void> {
+  try {
+    // Check rate limit
+    const allowed = await checkCommandRateLimit(interaction, env, "pdf");
+    if (!allowed) return;
+
+    // Extract attachment from options
+    const fileOption = interaction.data?.options?.find(opt => opt.name === 'file');
+    if (!fileOption) {
+      await sendFollowup(interaction, '❌ No PDF file provided.');
+      return;
+    }
+
+    // Get attachment from resolved data (Discord passes attachment ID as value)
+    const attachmentId = String(fileOption.value);
+    const attachment = interaction.data?.resolved?.attachments?.[attachmentId];
+
+    if (!attachment || attachment.content_type !== 'application/pdf') {
+      await sendFollowup(interaction, '❌ Please provide a valid PDF file.');
+      return;
+    }
+
+    // Validate file size (10 MB limit)
+    if (attachment.size > 10 * 1024 * 1024) {
+      await sendFollowup(interaction, '❌ PDF is too large. Please upload a file smaller than 10 MB.');
+      return;
+    }
+
+    // Extract optional question
+    const questionOption = interaction.data?.options?.find(opt => opt.name === 'question');
+    const userQuestion = questionOption ? String(questionOption.value) : '';
+
+    // Fetch PDF from Discord CDN
+    const pdfResponse = await fetch(attachment.url);
+    if (!pdfResponse.ok) {
+      throw new Error('Failed to download PDF');
+    }
+
+    const pdfBuffer = await pdfResponse.arrayBuffer();
+
+    // Extract text using unpdf
+    const { extractText } = await import('unpdf');
+    const extracted = await extractText(pdfBuffer);
+    const pdfText = extracted.text;
+
+    // Build prompt
+    const userPrompt = `Analyze this PDF document${userQuestion ? ' and answer the user\'s question' : ''}.
+
+Document: ${attachment.filename}
+Pages: ${extracted.totalPages}
+Extracted Text:
+${pdfText}
+
+${userQuestion ? `User Question: ${userQuestion}` : 'Please provide a comprehensive summary and analysis of this document.'}`;
+
+    // Call Llama 4 Scout
+    const llmResponse = await callLLMForPDF(
+      env.AI,
+      env.OPENROUTER_API_KEY,
+      SYSTEM_PROMPT,
+      userPrompt
+    );
+
+    const replyText = llmResponse || 'Unable to analyze document.';
+
+    // Send formatted response
+    await sendFollowup(
+      interaction,
+      `📄 **PDF Analysis: ${attachment.filename}**\n\n${replyText}`
+    );
+
+  } catch (error: any) {
+    console.error('PDF analysis error:', error);
+    await sendFollowup(
+      interaction,
+      `❌ Failed to process PDF: ${error.message}\n\nPlease ensure the file is a valid text-based PDF.`
+    );
   }
 }
 
@@ -756,6 +860,54 @@ async function callLLM(
 
   // Fallback to OpenRouter
   return await callOpenRouterFallback(openRouterKey, systemPrompt, userPrompt, maxTokens, temperature);
+}
+
+/**
+ * PDF-specific LLM function - uses Llama 4 Scout for document analysis
+ * @returns The text response from the LLM
+ */
+async function callLLMForPDF(
+  ai: Ai,
+  openRouterKey: string,
+  systemPrompt: string,
+  userPrompt: string
+): Promise<string | null> {
+  // System prompt for document analysis
+  const pdfSystemPrompt = `You are an expert document analyst. Extract and organize information from documents accurately and concisely. Focus on factual information present in the document. If information is not available, say "Not found".`;
+
+  const messages = [
+    { role: 'system', content: pdfSystemPrompt },
+    { role: 'user', content: userPrompt }
+  ];
+
+  try {
+    // Try Cloudflare AI Llama 4 Scout first
+    console.log("Attempting Cloudflare AI Llama 4 Scout for PDF analysis...");
+    const response = await ai.run(CF_AI_PDF_MODEL, {
+      messages: messages,
+      max_tokens: PDF_MAX_TOKENS,
+      temperature: PDF_TEMPERATURE
+    });
+
+    const content = response.response;
+    if (content && content.trim().length > 0) {
+      console.log("Cloudflare AI PDF analysis succeeded");
+      return content.trim();
+    }
+
+    console.log("Cloudflare AI returned empty response, trying OpenRouter...");
+  } catch (err: any) {
+    console.log(`Cloudflare AI PDF failed: ${err.message}, falling back to OpenRouter`);
+  }
+
+  // Fallback to OpenRouter
+  return await callOpenRouterFallback(
+    openRouterKey,
+    pdfSystemPrompt,
+    userPrompt,
+    PDF_MAX_TOKENS,
+    PDF_TEMPERATURE
+  );
 }
 
 /**

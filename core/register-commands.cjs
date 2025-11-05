@@ -67,6 +67,25 @@ const commands = [
     dm_permission: false,
   },
   {
+    name: 'pdf',
+    description: '📄 Analyze a PDF document with AI (Llama 4 Scout)',
+    dm_permission: false,
+    options: [
+      {
+        name: 'file',
+        description: 'PDF file to analyze',
+        type: 11, // ATTACHMENT type
+        required: true,
+      },
+      {
+        name: 'question',
+        description: 'Optional: Ask a specific question about the document',
+        type: 3, // STRING type
+        required: false,
+      },
+    ],
+  },
+  {
     name: 'videos',
     description: '🎬 Browse your TV library or open episodes with natural language',
     dm_permission: false,
@@ -183,7 +202,7 @@ async function registerCommands() {
 
       // Group and display commands
       const coreCommands = data.filter(cmd =>
-        ['chat', 'web-search', 'clear', 'videos', 'pc-lock', 'pc-restart', 'pc-shutdown', 'pc-sleep'].includes(cmd.name)
+        ['chat', 'web-search', 'clear', 'pdf', 'videos', 'pc-lock', 'pc-restart', 'pc-shutdown', 'pc-sleep'].includes(cmd.name)
       );
       const spotifyCommands = data.filter(cmd =>
         ['linkspotify', 'play', 'resume', 'pause', 'next', 'previous', 'nowplaying', 'playlists'].includes(cmd.name)
