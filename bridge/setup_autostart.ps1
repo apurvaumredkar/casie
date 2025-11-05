@@ -31,29 +31,42 @@ Write-Host "Creating scheduled task '$taskName'..." -ForegroundColor Cyan
 $action = New-ScheduledTaskAction -Execute "powershell.exe" `
     -Argument "-ExecutionPolicy Bypass -WindowStyle Hidden -File `"$scriptPath`" $scriptArgs"
 
-# Define the trigger (when to run)
-$trigger = New-ScheduledTaskTrigger -AtLogOn
+# Define multiple triggers (when to run)
+$triggerLogon = New-ScheduledTaskTrigger -AtLogOn
+$triggerStartup = New-ScheduledTaskTrigger -AtStartup
+
+# Create custom trigger for wake from sleep (using CIM class)
+$triggerWakeClass = Get-CimClass -ClassName MSFT_TaskSessionStateChangeTrigger -Namespace Root/Microsoft/Windows/TaskScheduler
+$triggerWake = New-CimInstance -CimClass $triggerWakeClass -ClientOnly
+$triggerWake.Enabled = $true
+$triggerWake.StateChange = 8  # 8 = SessionUnlock (covers wake from sleep)
+
+# Combine all triggers
+$triggers = @($triggerLogon, $triggerStartup, $triggerWake)
 
 # Define the principal (run with highest privileges)
 $principal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" `
     -LogonType Interactive `
     -RunLevel Highest
 
-# Define settings
+# Define settings with restart on failure
 $settings = New-ScheduledTaskSettingsSet `
     -AllowStartIfOnBatteries `
     -DontStopIfGoingOnBatteries `
     -StartWhenAvailable `
-    -ExecutionTimeLimit (New-TimeSpan -Hours 0)  # No time limit
+    -ExecutionTimeLimit (New-TimeSpan -Hours 0) `
+    -RestartCount 3 `
+    -RestartInterval (New-TimeSpan -Minutes 1) `
+    -MultipleInstances IgnoreNew  # Don't start new instance if already running
 
 # Register the task
 try {
     Register-ScheduledTask -TaskName $taskName `
         -Action $action `
-        -Trigger $trigger `
+        -Trigger $triggers `
         -Principal $principal `
         -Settings $settings `
-        -Description "Automatically starts CASIE Bridge (FastAPI + Cloudflare Tunnel) on user login" `
+        -Description "Automatically starts CASIE Bridge (FastAPI + Cloudflare Tunnel) on user login, system startup, and wake from sleep" `
         -Force | Out-Null
 
     Write-Host ""
@@ -63,11 +76,18 @@ try {
     Write-Host ""
     Write-Host "Task Details:" -ForegroundColor Cyan
     Write-Host "  - Task Name: $taskName" -ForegroundColor White
-    Write-Host "  - Trigger: At user logon" -ForegroundColor White
+    Write-Host "  - Triggers:" -ForegroundColor White
+    Write-Host "    * At user logon" -ForegroundColor Gray
+    Write-Host "    * At system startup" -ForegroundColor Gray
+    Write-Host "    * On wake from sleep/unlock" -ForegroundColor Gray
     Write-Host "  - Script: $scriptPath" -ForegroundColor White
     Write-Host "  - Privileges: Highest (Administrator)" -ForegroundColor White
+    Write-Host "  - Restart on failure: 3 attempts, 1 minute interval" -ForegroundColor White
     Write-Host ""
-    Write-Host "CASIE Bridge will now start automatically when you log in!" -ForegroundColor Green
+    Write-Host "CASIE Bridge will now start automatically on:" -ForegroundColor Green
+    Write-Host "  - User login" -ForegroundColor White
+    Write-Host "  - System startup" -ForegroundColor White
+    Write-Host "  - Wake from sleep" -ForegroundColor White
     Write-Host ""
     Write-Host "To verify the task, run:" -ForegroundColor Yellow
     Write-Host "  Get-ScheduledTask -TaskName '$taskName' | Select-Object *" -ForegroundColor Gray
