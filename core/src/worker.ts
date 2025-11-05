@@ -476,18 +476,42 @@ async function handlePdfDeferred(
     const questionOption = interaction.data?.options?.find(opt => opt.name === 'question');
     const userQuestion = questionOption ? String(questionOption.value) : '';
 
-    // Fetch PDF from Discord CDN
-    const pdfResponse = await fetch(attachment.url);
+    console.log(`[PDF] Starting analysis for ${attachment.filename} (${attachment.size} bytes)`);
+
+    // Fetch PDF from Discord CDN with timeout
+    console.log('[PDF] Downloading from Discord CDN...');
+    const pdfResponse = await Promise.race([
+      fetch(attachment.url),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('PDF download timeout after 30s')), 30000)
+      )
+    ]);
+
     if (!pdfResponse.ok) {
       throw new Error('Failed to download PDF');
     }
 
     const pdfBuffer = await pdfResponse.arrayBuffer();
+    console.log(`[PDF] Downloaded ${pdfBuffer.byteLength} bytes`);
 
-    // Extract text using unpdf
+    // Extract text using unpdf with timeout
+    console.log('[PDF] Extracting text with unpdf...');
     const { extractText } = await import('unpdf');
-    const extracted = await extractText(pdfBuffer);
-    const pdfText = extracted.text;
+    const extracted = await Promise.race([
+      extractText(pdfBuffer),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('PDF text extraction timeout after 45s')), 45000)
+      )
+    ]);
+
+    // unpdf returns text as string or array of strings, normalize to string
+    const pdfText = Array.isArray(extracted.text) ? extracted.text.join('\n') : extracted.text;
+    console.log(`[PDF] Extracted ${pdfText.length} characters from ${extracted.totalPages} pages`);
+
+    // Check if text is too long (limit to ~100k chars to avoid token limits)
+    const truncatedText = pdfText.length > 100000
+      ? pdfText.substring(0, 100000) + '\n\n[... text truncated due to length ...]'
+      : pdfText;
 
     // Build prompt
     const userPrompt = `Analyze this PDF document${userQuestion ? ' and answer the user\'s question' : ''}.
@@ -495,26 +519,31 @@ async function handlePdfDeferred(
 Document: ${attachment.filename}
 Pages: ${extracted.totalPages}
 Extracted Text:
-${pdfText}
+${truncatedText}
 
 ${userQuestion ? `User Question: ${userQuestion}` : 'Please provide a comprehensive summary and analysis of this document.'}`;
 
-    // Call Llama 4 Scout
-    const llmResponse = await callLLMForPDF(
-      env.AI,
-      env.OPENROUTER_API_KEY,
-      SYSTEM_PROMPT,
-      userPrompt
-    );
+    // Call Llama 4 Scout with timeout
+    console.log('[PDF] Calling LLM for analysis...');
+    const llmResponse = await Promise.race([
+      callLLMForPDF(env.AI, env.OPENROUTER_API_KEY, SYSTEM_PROMPT, userPrompt),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('LLM analysis timeout after 60s')), 60000)
+      )
+    ]);
 
     const replyText = llmResponse || 'Unable to analyze document.';
+    console.log(`[PDF] LLM returned ${replyText.length} characters`);
 
     // Send formatted response using intelligent length-based routing
+    console.log('[PDF] Sending response to Discord...');
     await sendLongResponse(
       interaction,
       `PDF Analysis: ${attachment.filename}`,
       replyText
     );
+
+    console.log('[PDF] Analysis complete, updating STM...');
 
     // Update STM in background (don't block on this)
     // Store the user's intent and the analysis result for future reference
@@ -534,13 +563,14 @@ ${userQuestion ? `User Question: ${userQuestion}` : 'Please provide a comprehens
         channelId,
         userId
       );
+      console.log('[PDF] STM updated successfully');
     } catch (err) {
-      console.error("Failed to update STM (non-critical):", err);
+      console.error("[PDF] Failed to update STM (non-critical):", err);
       // Don't propagate error - user already has their response
     }
 
   } catch (error: any) {
-    console.error('PDF analysis error:', error);
+    console.error('[PDF] Analysis error:', error);
     await sendFollowup(
       interaction,
       `❌ Failed to process PDF: ${error.message}\n\nPlease ensure the file is a valid text-based PDF.`
