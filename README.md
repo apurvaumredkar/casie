@@ -1,5 +1,9 @@
 # CASIE - Context-Aware Small Intelligence on Edge
 
+> **⚠️ ARCHIVED PROJECT**
+>
+> This project has been archived and is no longer actively maintained. The codebase is provided as a reference implementation for educational purposes.
+
 A production-ready Discord bot platform demonstrating modern serverless architecture on Cloudflare's edge network. CASIE (Context-Aware Small Intelligence on Edge) showcases how to build scalable, globally distributed Discord bots without traditional server infrastructure, using lightweight AI models running at the edge.
 
 ---
@@ -23,6 +27,7 @@ CASIE is a **unified Discord bot** that demonstrates best practices for building
 ### AI & Conversation
 - `/chat <query>` - Chat with AI assistant with conversational memory (2-hour context window)
 - `/web-search <query>` - Search the web and get AI-summarized results
+- `/pdf <file> [question]` - Analyze PDF documents with AI (optional question)
 
 ### Media Library
 - `/videos <query>` - Unified TV library browser and episode player with natural language understanding
@@ -61,8 +66,8 @@ CASIE is a **unified Discord bot** that demonstrates best practices for building
 - Graceful expiration with Cloudflare KV
 
 ### Interactive Components
-- Discord button integration for search results
-- Visual confirmation before actions
+- Discord button integration for confirmations
+- Visual feedback before actions
 - Clean, modern interface
 
 ### Smart Device Management
@@ -190,11 +195,12 @@ Traditional Discord bots require always-on servers, complex infrastructure, and 
 3. Spotify Developer account
 4. OpenRouter API key (free tier available)
 5. Brave Search API key (2,000 queries/month free)
+6. ngrok account (free tier available)
 
 **Tools Required:**
 - Node.js 18+ and npm
 - Wrangler CLI (`npm install -g wrangler`)
-- Git (optional, for version control)
+- Python 3.13+ (for bridge)
 
 ### Quick Start
 
@@ -203,7 +209,7 @@ Traditional Discord bots require always-on servers, complex infrastructure, and 
 git clone <repo>
 cd casie/core
 npm install
-cp .env.template .env
+cp .env.example .env
 # Edit .env with your credentials
 ```
 
@@ -219,20 +225,24 @@ wrangler kv namespace create BRIDGE_KV
 
 # Create D1 database
 wrangler d1 create videos-db
-wrangler d1 execute videos-db --file=schema.sql
 
-# Update wrangler.toml with namespace IDs
+# Update wrangler.toml with the generated IDs
 ```
 
 **3. Set Secrets:**
 ```bash
-# Upload all secrets at once
-wrangler secret bulk .env
-
-# Or set individually
+# Set secrets individually
 wrangler secret put DISCORD_PUBLIC_KEY
 wrangler secret put DISCORD_BOT_TOKEN
-# ... etc
+wrangler secret put APPLICATION_ID
+wrangler secret put OPENROUTER_API_KEY
+wrangler secret put BRAVE_API_KEY
+wrangler secret put SPOTIFY_CLIENT_ID
+wrangler secret put SPOTIFY_CLIENT_SECRET
+wrangler secret put SPOTIFY_REDIRECT_URI
+wrangler secret put SPOTIFY_STATE_SECRET
+wrangler secret put CASIE_BRIDGE_API_TOKEN
+wrangler secret put YOUR_DISCORD_ID
 ```
 
 **4. Deploy Worker:**
@@ -255,8 +265,6 @@ Try /linkspotify for Spotify integration
 
 ### Environment Variables
 
-See [SECRETS_SETUP.md](core/SECRETS_SETUP.md) for detailed secret configuration instructions.
-
 **Required Secrets (11 total):**
 - `DISCORD_PUBLIC_KEY` - Discord app public key
 - `DISCORD_BOT_TOKEN` - Discord bot token
@@ -270,28 +278,27 @@ See [SECRETS_SETUP.md](core/SECRETS_SETUP.md) for detailed secret configuration 
 - `CASIE_BRIDGE_API_TOKEN` - Bridge API authentication token
 - `YOUR_DISCORD_ID` - Your Discord user ID (for PC control commands)
 
+See `.env.example` files in `core/` and `bridge/` directories for templates.
+
 ---
 
 ## 🌉 CASIE Bridge - Local Server Tunnel
 
-A self-contained Windows environment for running a FastAPI server locally and exposing it securely via Cloudflare Tunnel with automatic URL upload to Cloudflare KV.
+Python daemon that runs FastAPI server + ngrok tunnel for local PC access.
 
 ### What is CASIE Bridge?
 
-CASIE Bridge creates a secure bridge between your local development environment and the internet, allowing Discord bots to communicate with local services running on your Windows machine. Perfect for:
-- Local media library access
-- PC control commands (lock, restart, shutdown, sleep)
-- Local development and testing
-- Quick prototyping with automatic HTTPS URLs
+CASIE Bridge creates a secure bridge between your local Windows PC and the Cloudflare Worker, allowing the bot to:
+- Access your local media library
+- Execute PC control commands (lock, restart, shutdown, sleep)
+- Open local files
 
 ### Features
 
 - **FastAPI Server**: Lightweight Python web server running on `http://127.0.0.1:8000`
-- **Cloudflare Tunnel**: Free HTTPS tunnel exposing your local server publicly
+- **ngrok Tunnel**: Free static domain exposing your local server publicly
 - **Bearer Token Auth**: Secure all endpoints with token-based authentication
-- **KV URL Storage**: Automatically uploads dynamic tunnel URL to Cloudflare KV
-- **Auto-start**: Configured to start automatically on Windows user login via Task Scheduler
-- **Zero Config**: Runs without port forwarding or router configuration
+- **Single Process**: Manages both FastAPI + ngrok in one Python daemon
 
 ### Available Endpoints
 
@@ -304,15 +311,9 @@ CASIE Bridge creates a secure bridge between your local development environment 
 - **`POST /shutdown`** - Shutdown Windows PC
 - **`POST /sleep`** - Put Windows PC to sleep
 
-### TV Show Management (Unified Script)
+### TV Show Management
 
-CASIE Bridge includes a unified script that handles both markdown indexing AND Cloudflare D1 database population.
-
-**How it works:**
-1. Scans your local TV directory for video files
-2. Generates `videos.md` with show/season/episode information (for browse mode)
-3. Populates Cloudflare D1 database with episode metadata (for open mode)
-4. Uses LLM parsing to extract structured data and route between browse/open modes
+The `videos.py` script handles both markdown indexing AND Cloudflare D1 database population:
 
 **Usage:**
 ```bash
@@ -330,79 +331,33 @@ python videos.py --d1-only
 ```bash
 TV_DIRECTORY=C:\path\to\your\TV    # Path to TV directory
 D1_DATABASE_ID=your-database-id    # Cloudflare D1 database ID
+NGROK_AUTHTOKEN=your-ngrok-token   # ngrok authentication token
+NGROK_DOMAIN=your-domain.ngrok-free.app  # Static ngrok domain
 ```
-
-**Architecture:**
-- **Old approach**: Qdrant vector search with embeddings (~60ms+ queries)
-- **New approach**: LLM parsing + D1 SQL lookups (~28ms queries)
-- **Benefits**: Faster, more accurate, simpler architecture, no Docker needed
 
 ### Quick Start
 
 **1. Install Requirements:**
-```powershell
+```bash
 # Install Python 3.13+
-winget install Python.Python.3.13
-
-# Install cloudflared
-winget install Cloudflare.cloudflared
-
-# Install Python packages
 pip install -r bridge/requirements.txt
 ```
 
-**2. Generate API Token:**
-```powershell
-cd bridge
-.\setup_api_token.ps1
-```
-
-**3. Configure Environment:**
+**2. Configure Environment:**
 ```bash
-# Edit bridge/.env
-API_AUTH_TOKEN=<generated_token>
-TV_DIRECTORY=C:\path\to\TV
-D1_DATABASE_ID=<your_d1_id>
+# Copy and edit bridge/.env.example to bridge/.env
+cd bridge
+cp .env.example .env
+# Edit .env with your values
 ```
 
-**4. Setup Auto-start:**
-```powershell
-.\setup_autostart.ps1
+**3. Start Bridge:**
+```bash
+cd bridge
+python main.py
 ```
 
-**5. Start Services:**
-```powershell
-.\casie.ps1 -Action start
-```
-
-### Manual Control
-
-```powershell
-# Start all services
-.\bridge\casie.ps1 -Action start
-
-# Stop all services
-.\bridge\casie.ps1 -Action stop
-
-# Restart services
-.\bridge\casie.ps1 -Action restart
-
-# Check status
-.\bridge\casie.ps1 -Action status
-```
-
-### Directory Structure
-
-```
-bridge/
-├── main.py                 # FastAPI application
-├── videos.py               # Unified TV show management (markdown + D1)
-├── requirements.txt        # Python dependencies
-├── .env                    # Environment config (contains secrets)
-├── casie.ps1               # Unified service manager
-├── setup_autostart.ps1     # Configure Task Scheduler
-└── setup_api_token.ps1     # Generate and configure API token
-```
+The bridge will run in the foreground. Use Ctrl+C to stop it.
 
 ---
 
@@ -421,7 +376,6 @@ bridge/
 - Encrypted secret storage in Cloudflare
 - Secure token management in KV
 - No plaintext credentials
-- Regular security audits
 
 **Rate Limiting:**
 - Per-user, per-command cooldowns
@@ -442,7 +396,6 @@ bridge/
 - STM entries expire after 2 hours
 - Spotify tokens persist until revoked
 - No permanent user data storage
-- Optional data deletion on request
 
 **Third-Party Services:**
 - OpenRouter (LLM processing)
@@ -450,6 +403,7 @@ bridge/
 - Spotify (music control)
 - Discord (bot platform)
 - Cloudflare (infrastructure)
+- ngrok (local tunnel)
 
 ---
 
@@ -470,17 +424,17 @@ casie/
 │   ├── wrangler.toml             # Worker configuration
 │   ├── package.json              # Dependencies and scripts
 │   ├── register-commands.cjs     # Command registration
-│   ├── .env.template             # Environment template
-│   └── SECRETS_SETUP.md          # Secret configuration guide
+│   └── .env.example              # Environment template
 │
 ├── bridge/                        # Local Bridge Server
-│   ├── main.py                   # FastAPI application
-│   ├── videos.py                 # TV show management
-│   ├── casie.ps1                 # Service manager
-│   ├── setup_autostart.ps1       # Auto-start configuration
-│   └── setup_api_token.ps1       # Token generator
+│   ├── main.py                   # FastAPI + ngrok daemon
+│   ├── videos.py                 # TV show management (markdown + D1)
+│   ├── requirements.txt          # Python dependencies
+│   └── .env.example              # Environment template
 │
-└── CLAUDE.md                      # Development guide
+├── .gitignore                     # Git exclusions
+├── LICENSE                        # MIT license
+└── README.md                      # This file
 ```
 
 ---
@@ -522,7 +476,6 @@ wrangler tail --format pretty
 - [Cloudflare Workers Docs](https://developers.cloudflare.com/workers/)
 - [Discord Developer Portal](https://discord.com/developers/docs)
 - [Spotify Web API](https://developer.spotify.com/documentation/web-api)
-- [CLAUDE.md](CLAUDE.md) - Comprehensive development guide
 
 ---
 

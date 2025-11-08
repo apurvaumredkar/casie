@@ -1,8 +1,9 @@
 {
 	"name": "casie",
 	"version": "1.0.0",
-	"description": "CASIE - Context-Aware Small Intelligence on Edge. Unified Discord bot on Cloudflare Workers",
+	"description": "CASIE - Context-Aware Small Intelligence on Edge. Unified Discord bot on Cloudflare Workers (ARCHIVED)",
 	"private": true,
+	"archived": true,
 	"type": "module",
 	"scripts": {
 		"deploy": "wrangler deploy",
@@ -18,7 +19,8 @@
 		"cloudflare",
 		"workers",
 		"ai",
-		"spotify"
+		"spotify",
+		"archived"
 	],
 	"author": "",
 	"license": "MIT",

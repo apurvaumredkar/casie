@@ -1,0 +1,52 @@
+# CASIE - Unified Discord Bot Worker
+# Combines all bot functionality (AI chat, web search, Spotify, media control, etc.)
+#
+# SETUP INSTRUCTIONS:
+# 1. Replace YOUR_CLOUDFLARE_ACCOUNT_ID with your Cloudflare account ID
+# 2. Create KV namespaces: wrangler kv namespace create BRIDGE_KV
+#                          wrangler kv namespace create STM
+#                          wrangler kv namespace create SPOTIFY_TOKENS
+# 3. Create D1 database: wrangler d1 create videos-db
+# 4. Replace the placeholder IDs below with the generated IDs
+
+name = "casie"
+main = "src/worker.ts"
+compatibility_date = "2025-10-28"
+account_id = "YOUR_CLOUDFLARE_ACCOUNT_ID"
+
+# Environment variables (defaults provided in code)
+[vars]
+OPENROUTER_MODEL = "meta-llama/llama-4-scout:free"
+
+# Build configuration
+[build]
+command = "npm run build"
+
+# Cloudflare AI binding
+[ai]
+binding = "AI"
+
+# KV namespace for Bridge tunnel URL
+[[kv_namespaces]]
+binding = "BRIDGE_KV"
+id = "YOUR_BRIDGE_KV_NAMESPACE_ID"  # Run: wrangler kv namespace create BRIDGE_KV
+
+# KV namespace for Short-Term Memory (conversational context)
+[[kv_namespaces]]
+binding = "STM"
+id = "YOUR_STM_NAMESPACE_ID"  # Run: wrangler kv namespace create STM
+
+# KV namespace for Spotify OAuth tokens
+[[kv_namespaces]]
+binding = "SPOTIFY_TOKENS"
+id = "YOUR_SPOTIFY_TOKENS_NAMESPACE_ID"  # Run: wrangler kv namespace create SPOTIFY_TOKENS
+
+# D1 database for media library
+[[d1_databases]]
+binding = "DB"
+database_name = "videos-db"
+database_id = "YOUR_D1_DATABASE_ID"  # Run: wrangler d1 create videos-db
+
+# Observability
+[observability]
+enabled = true

@@ -27,6 +27,13 @@ venv/
 env/
 ENV/
 
+# Node/Wrangler artifacts (not needed for Docker setup)
+node_modules/
+.wrangler/
+
+# Log files (Docker captures stdout)
+*.log
+
 # IDE
 .vscode/
 .idea/
