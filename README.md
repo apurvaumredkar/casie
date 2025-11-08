@@ -35,12 +35,6 @@ CASIE is a **unified Discord bot** that demonstrates best practices for building
   - **Open mode**: "play friends s01e01", "open brooklyn nine nine season 1 episode 1", "play the office 3x12"
   - Intelligently routes between browsing and playback using LLM classification
 
-### PC Control (via CASIE Bridge)
-- `/pc-lock` - Lock your Windows PC with confirmation
-- `/pc-restart` - Restart your Windows PC with confirmation
-- `/pc-shutdown` - Shutdown your Windows PC with confirmation
-- `/pc-sleep` - Put your Windows PC to sleep with confirmation
-
 ### Spotify Integration
 - `/linkspotify` - Link your Spotify account (one-time setup)
 - `/play <query>` - Search for tracks and play with confirmation buttons
@@ -52,7 +46,7 @@ CASIE is a **unified Discord bot** that demonstrates best practices for building
 - `/playlists` - Browse your personal playlists
 
 ### Utility
-- `/clear` - Clear all messages in the channel (requires manage messages permission)
+- `/clear` - Clear all messages in the channel & CASIE's short term memory (requires manage messages permission)
 
 ---
 
@@ -492,3 +486,4 @@ This is a personal project, but feel free to fork and adapt for your own use cas
 ---
 
 **Built with ❤️ using Cloudflare Workers, TypeScript, and FastAPI**
+
